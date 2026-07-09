@@ -146,6 +146,120 @@ func TestRotator_BodyCapPassthrough(t *testing.T) {
 	}
 }
 
+func TestRotator_SuccessNoRotate(t *testing.T) {
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"success":true,"data":[]}`))
+	}))
+	defer fake.Close()
+
+	cfg := Config{
+		APIKeys:      []string{"fc-a", "fc-b"},
+		Upstream:     fake.URL,
+		UpstreamHost: httptestURLHost(fake.URL),
+		MaxPasses:    2,
+		MaxBodyBytes: 16 * 1024 * 1024,
+		ProxyBaseURL: "http://rotator.test",
+	}
+	pool := NewKeyPool(cfg.APIKeys)
+	r := newRotator(cfg, pool, &http.Client{}, newLogger("info"))
+
+	req := httptest.NewRequest("POST", "/v2/search", bytes.NewReader([]byte(`{"query":"x"}`)))
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != 200 {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if i, _ := pool.Current(); i != 0 {
+		t.Fatalf("cursor = %d, want 0 (no rotation on success)", i)
+	}
+}
+
+func TestRotator_RotatesOn429(t *testing.T) {
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		switch auth {
+		case "Bearer fc-a":
+			w.WriteHeader(429)
+			_, _ = w.Write([]byte(`{"error":"Rate limited"}`))
+		case "Bearer fc-b":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(200)
+			_, _ = w.Write([]byte(`{"success":true,"data":[]}`))
+		default:
+			w.WriteHeader(401)
+			_, _ = w.Write([]byte(`{"error":"Unauthorized"}`))
+		}
+	}))
+	defer fake.Close()
+
+	cfg := Config{
+		APIKeys:      []string{"fc-a", "fc-b"},
+		Upstream:     fake.URL,
+		UpstreamHost: httptestURLHost(fake.URL),
+		MaxPasses:    2,
+		MaxBodyBytes: 16 * 1024 * 1024,
+		ProxyBaseURL: "http://rotator.test",
+	}
+	pool := NewKeyPool(cfg.APIKeys)
+	r := newRotator(cfg, pool, &http.Client{}, newLogger("info"))
+
+	req := httptest.NewRequest("POST", "/v2/search", bytes.NewReader([]byte(`{"query":"x"}`)))
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != 200 {
+		t.Fatalf("status = %d, want 200 (should have rotated to good key)", rec.Code)
+	}
+	if i, _ := pool.Current(); i != 1 {
+		t.Fatalf("cursor = %d, want 1 after rotating off 429'd key", i)
+	}
+}
+
+func TestRotator_RotatesOnBodyDenylist(t *testing.T) {
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		switch auth {
+		case "Bearer fc-a":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(200)
+			_, _ = w.Write([]byte(`{"success":false,"error":"Insufficient credits"}`))
+		case "Bearer fc-b":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(200)
+			_, _ = w.Write([]byte(`{"success":true}`))
+		default:
+			w.WriteHeader(401)
+			_, _ = w.Write([]byte(`{"error":"Unauthorized"}`))
+		}
+	}))
+	defer fake.Close()
+
+	cfg := Config{
+		APIKeys:      []string{"fc-a", "fc-b"},
+		Upstream:     fake.URL,
+		UpstreamHost: httptestURLHost(fake.URL),
+		MaxPasses:    2,
+		MaxBodyBytes: 16 * 1024 * 1024,
+		ProxyBaseURL: "http://rotator.test",
+	}
+	pool := NewKeyPool(cfg.APIKeys)
+	r := newRotator(cfg, pool, &http.Client{}, newLogger("info"))
+
+	req := httptest.NewRequest("POST", "/v2/search", bytes.NewReader([]byte(`{"query":"x"}`)))
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != 200 {
+		t.Fatalf("status = %d, want 200 (should have rotated on body denylist match)", rec.Code)
+	}
+	if i, _ := pool.Current(); i != 1 {
+		t.Fatalf("cursor = %d, want 1 after rotating off body-denylisted key", i)
+	}
+}
+
 // httptestURLHost extracts host:port from a httptest.URL for upstreamHost matching.
 func httptestURLHost(raw string) string {
 	u, err := url.Parse(raw)

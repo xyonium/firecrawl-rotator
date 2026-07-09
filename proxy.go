@@ -34,6 +34,11 @@ func (r *rotator) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	var lastBody []byte
 	var overCap bool
 
+	// The pool cursor is shared across concurrent requests: Current() and
+	// Advance() lock independently, so under load two requests may read the
+	// same key and both advance. This is intended — rotation is approximate
+	// round-robin, and a per-request lock would serialize all upstream calls.
+	// A good key is still found within MaxPasses full sweeps of the pool.
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		idx, key := r.pool.Current()
 
@@ -48,6 +53,13 @@ func (r *rotator) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		upReq.Header.Del("Host")
 		upReq.Header.Set("Authorization", "Bearer "+key)
 		upReq.Host = r.cfg.UpstreamHost
+		// Strip hop-by-hop headers from the forwarded request (Connection,
+		// Transfer-Encoding, etc.) the same way we do for responses.
+		for k := range upReq.Header {
+			if isHopByHop(k) {
+				upReq.Header.Del(k)
+			}
+		}
 
 		resp, err := r.client.Do(upReq)
 		if err != nil {
