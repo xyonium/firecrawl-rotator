@@ -79,7 +79,10 @@ func rewriteOne(s, proxyBase, upstreamHost string) (string, bool) {
 }
 
 // paginationGuard reports whether a response indicates more data to fetch but
-// has no "next" key. Terminal pages return false.
+// has no "next" key - a sign the pagination field may have been renamed.
+// Returns true (warn) only for a non-terminal crawl status with no "next".
+// Terminal pages (completed/failed/cancelled), pages with a "next", and
+// non-crawl payloads (no "status" field) return false.
 func paginationGuard(body []byte) bool {
 	var root map[string]any
 	if err := json.Unmarshal(body, &root); err != nil {
@@ -91,31 +94,12 @@ func paginationGuard(body []byte) bool {
 	status, _ := root["status"].(string)
 	switch status {
 	case "completed", "failed", "cancelled":
-		return false
+		return false // terminal - no more data expected
 	case "":
-		// no status field at all - not a crawl-status payload
-		return false
+		return false // not a crawl-status payload
 	}
-	// non-terminal status and no next -> warn. Also cover completed<total
-	// even if status is missing but counts are present.
-	completed, hasC := jsonNumber(root["completed"])
-	total, hasT := jsonNumber(root["total"])
-	if hasC && hasT && completed < total {
-		return true
-	}
-	// non-terminal status present, no next -> warn
+	// non-terminal status (e.g. "scraping") with no "next" -> warn
 	return true
-}
-
-func jsonNumber(v any) (int, bool) {
-	switch n := v.(type) {
-	case float64:
-		return int(n), true
-	case int:
-		return n, true
-	default:
-		return 0, false
-	}
 }
 
 // formatProxyBase ensures no trailing slash for URL composition.

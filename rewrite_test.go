@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestRewriteNext_AbsoluteUpstream(t *testing.T) {
 	in := []byte(`{"next":"https://api.firecrawl.dev/v2/crawl/abc/next?cursor=2","data":[]}`)
@@ -77,5 +80,27 @@ func TestPaginationGuard_HasNext(t *testing.T) {
 	body := []byte(`{"status":"scraping","completed":3,"total":10,"next":"https://api.firecrawl.dev/x","data":[]}`)
 	if paginationGuard(body) {
 		t.Fatal("expected guard=false when next present")
+	}
+}
+
+func TestRewriteNext_NestedInArray(t *testing.T) {
+	in := []byte(`{"items":[{"next":"https://api.firecrawl.dev/x/y"}]}`)
+	out, changed := rewriteNext(in, "http://rotator.test", "api.firecrawl.dev")
+	if !changed {
+		t.Fatal("expected changed=true for nested next in array")
+	}
+	if !strings.Contains(string(out), "http://rotator.test/x/y") {
+		t.Fatalf("expected output to contain proxy URL, got %s", out)
+	}
+}
+
+func TestRewriteNext_NextUrlKeyNotRewritten(t *testing.T) {
+	in := []byte(`{"nextUrl":"https://api.firecrawl.dev/x"}`)
+	out, changed := rewriteNext(in, "http://rotator.test", "api.firecrawl.dev")
+	if changed {
+		t.Fatal("expected changed=false for nextUrl key")
+	}
+	if string(out) != string(in) {
+		t.Fatalf("expected output unchanged, got %s", out)
 	}
 }
