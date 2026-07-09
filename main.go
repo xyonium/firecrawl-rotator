@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"net/http"
 	"os"
 )
@@ -35,6 +36,22 @@ func buildServer() (*http.Server, error) {
 }
 
 func main() {
+	healthcheck := flag.Bool("healthcheck", false, "GET /healthz and exit 0/1")
+	flag.Parse()
+
+	if *healthcheck {
+		cfg, err := LoadConfig()
+		if err != nil {
+			os.Exit(1)
+		}
+		resp, err := http.Get("http://127.0.0.1:" + cfg.Port + "/healthz")
+		if err != nil || resp.StatusCode != 200 {
+			os.Exit(1)
+		}
+		_ = resp.Body.Close()
+		os.Exit(0)
+	}
+
 	srv, err := buildServer()
 	if err != nil {
 		os.Stderr.WriteString("config error: " + err.Error() + "\n")
