@@ -4,6 +4,7 @@ import (
 	"flag"
 	"net/http"
 	"os"
+	"time"
 )
 
 func buildServer() (*http.Server, error) {
@@ -17,7 +18,10 @@ func buildServer() (*http.Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	client := &http.Client{Transport: tr}
+	client := &http.Client{
+		Transport: tr,
+		Timeout:   30 * time.Second,
+	}
 	log := newLogger(cfg.LogLevel)
 
 	mux := http.NewServeMux()

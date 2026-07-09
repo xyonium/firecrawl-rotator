@@ -33,6 +33,7 @@ func (r *rotator) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	var lastHeader http.Header
 	var lastBody []byte
 	var overCap bool
+	var cleanBreak bool
 
 	// The pool cursor is shared across concurrent requests: Current() and
 	// Advance() lock independently, so under load two requests may read the
@@ -42,7 +43,7 @@ func (r *rotator) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		idx, key := r.pool.Current()
 
-		upReq, err := http.NewRequest(req.Method, r.cfg.Upstream+req.RequestURI, bytes.NewReader(inBody))
+		upReq, err := http.NewRequestWithContext(req.Context(), req.Method, r.cfg.Upstream+req.RequestURI, bytes.NewReader(inBody))
 		if err != nil {
 			http.Error(w, "build upstream request: "+err.Error(), 502)
 			return
@@ -80,12 +81,14 @@ func (r *rotator) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		if capped {
 			// over cap: forward untouched, no rotate/rewrite
 			r.log.warn("response body over MAX_BODY_BYTES, forwarding untouched", "key", idx)
+			cleanBreak = true
 			break
 		}
 
 		rotate, reason := shouldRotate(resp.StatusCode, body)
 		if !rotate {
 			r.pool.RecordSuccess(idx)
+			cleanBreak = true
 			break
 		}
 		kind := rejectKind(resp.StatusCode)
@@ -94,6 +97,11 @@ func (r *rotator) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			"from", idx, "reason", reason, "masked", maskKey(key))
 		r.pool.Advance()
 		// loop continues with next key
+	}
+
+	if !cleanBreak {
+		r.log.warn("all keys exhausted",
+			"lastStatus", lastStatus, "keys", len(r.pool.keys), "maxPasses", r.cfg.MaxPasses)
 	}
 
 	if overCap {
@@ -106,7 +114,10 @@ func (r *rotator) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if isJSON(lastHeader) {
 		proxyBase := r.cfg.ProxyBaseURL
 		if proxyBase == "" {
-			proxyBase = "http://" + r.cfg.UpstreamHost // fallback; real base comes from Host header at runtime
+			// Derive the proxy's own address from the incoming Host header - this
+			// is what callers (firecrawl-mcp) used to reach us, so rewritten next
+			// URLs point back here, keeping crawl pagination under rotation.
+			proxyBase = "http://" + req.Host
 		}
 		proxyBase = formatProxyBase(proxyBase)
 		if rb, changed := rewriteNext(lastBody, proxyBase, r.cfg.UpstreamHost); changed {

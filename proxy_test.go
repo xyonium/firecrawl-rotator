@@ -260,6 +260,45 @@ func TestRotator_RotatesOnBodyDenylist(t *testing.T) {
 	}
 }
 
+func TestRotator_NextRewriteUsesRequestHost(t *testing.T) {
+	// Backend returns a next URL pointing to itself (== upstreamHost).
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"success":true,"next":"http://` + r.Host + `/v2/x/next"}`))
+	}))
+	defer fake.Close()
+
+	cfg := Config{
+		APIKeys:      []string{"fc-a"},
+		Upstream:     fake.URL,
+		UpstreamHost: httptestURLHost(fake.URL),
+		MaxPasses:    2,
+		MaxBodyBytes: 16 * 1024 * 1024,
+		ProxyBaseURL: "", // <-- DEFAULT: unset, must derive from req.Host
+	}
+	pool := NewKeyPool(cfg.APIKeys)
+	r := newRotator(cfg, pool, &http.Client{}, newLogger("info"))
+
+	req := httptest.NewRequest("POST", "/v2/search", bytes.NewReader([]byte(`{}`)))
+	req.Host = "rotator.example:9999" // the address the caller used
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != 200 {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body, _ := io.ReadAll(rec.Body)
+	// The next URL must be rewritten to use req.Host, NOT the upstream host.
+	if !bytes.Contains(body, []byte("http://rotator.example:9999/v2/x/next")) {
+		t.Fatalf("expected next rewritten to req.Host 'rotator.example:9999'; got %s", body)
+	}
+	// And it must NOT contain the upstream host in the next URL.
+	if bytes.Contains(body, []byte(httptestURLHost(fake.URL)+"/v2/x/next")) {
+		t.Fatalf("next URL was NOT rewritten - still points at upstream host; got %s", body)
+	}
+}
+
 // httptestURLHost extracts host:port from a httptest.URL for upstreamHost matching.
 func httptestURLHost(raw string) string {
 	u, err := url.Parse(raw)
