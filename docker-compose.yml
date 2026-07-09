@@ -1,0 +1,35 @@
+services:
+  firecrawl-rotator:
+    build: .
+    # or: image: ghcr.io/<you>/firecrawl-rotator:latest
+    environment:
+      FIRECRAWL_API_KEYS: "fc-key1,fc-key2,fc-key3"
+      UPSTREAM: "https://api.firecrawl.dev"
+      PORT: "8788"
+      MAX_PASSES: "2"
+      MAX_BODY_BYTES: "16777216"
+      LOG_LEVEL: "info"
+      # UPSTREAM_PROXY: "http://corp-proxy:3128"   # optional egress proxy
+    ports:
+      - "8788:8788"
+    healthcheck:
+      test: ["CMD", "/rotator", "-healthcheck"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped
+
+  firecrawl:
+    image: ghcr.io/open-webui/mcpo:latest
+    entrypoint: ["uvx", "mcpo"]
+    command: ["--host", "0.0.0.0", "--port", "8000", "--config", "/config/config.json"]
+    volumes:
+      - ./config:/config:ro
+    depends_on:
+      firecrawl-rotator:
+        condition: service_healthy
+    environment:
+      # mcpo's config.json sets FIRECRAWL_API_URL per MCP server; shown here
+      # for clarity. The key is REMOVED - the rotator injects it.
+      FIRECRAWL_API_URL: "http://firecrawl-rotator:8788"
+    restart: unless-stopped
