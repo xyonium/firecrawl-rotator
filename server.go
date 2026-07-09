@@ -41,3 +41,19 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
 }
+
+func healthzHandler(pool *KeyPool) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		if pool == nil || len(pool.keys) == 0 {
+			writeJSON(w, 503, map[string]any{"ok": false})
+			return
+		}
+		writeJSON(w, 200, map[string]any{"ok": true})
+	}
+}
+
+func statusHandler(pool *KeyPool) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		writeJSON(w, 200, pool.Snapshot())
+	}
+}
