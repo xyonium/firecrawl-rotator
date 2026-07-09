@@ -71,8 +71,11 @@ func LoadConfig() (Config, error) {
 
 	upstream := envStr("UPSTREAM", "https://api.firecrawl.dev")
 	u, err := url.Parse(upstream)
-	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+	if err != nil {
 		return Config{}, fmt.Errorf("UPSTREAM %q is not a valid http(s) URL: %w", upstream, err)
+	}
+	if u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		return Config{}, fmt.Errorf("UPSTREAM %q is not a valid http(s) URL (scheme must be http/https, host required)", upstream)
 	}
 
 	maxPasses, err := envInt("MAX_PASSES", 2)
@@ -94,8 +97,11 @@ func LoadConfig() (Config, error) {
 	proxyStr := strings.TrimSpace(os.Getenv("UPSTREAM_PROXY"))
 	if proxyStr != "" {
 		pu, err := url.Parse(proxyStr)
-		if err != nil || pu.Host == "" {
+		if err != nil {
 			return Config{}, fmt.Errorf("UPSTREAM_PROXY %q is not a valid proxy URL: %w", proxyStr, err)
+		}
+		if pu.Host == "" {
+			return Config{}, fmt.Errorf("UPSTREAM_PROXY %q is not a valid proxy URL (host required)", proxyStr)
 		}
 		switch pu.Scheme {
 		case "http", "https", "socks5":
