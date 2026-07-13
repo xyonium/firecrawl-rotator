@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type rotator struct {
@@ -42,6 +43,12 @@ func (r *rotator) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// A good key is still found within MaxPasses full sweeps of the pool.
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		idx, key := r.pool.Current()
+		if idx < 0 {
+			// Every key is disabled (credit-exhausted). Stop retrying and
+			// surface the last error rather than burning more upstream calls.
+			r.log.warn("no usable keys (all credit-disabled)")
+			break
+		}
 
 		upReq, err := http.NewRequestWithContext(req.Context(), req.Method, r.cfg.Upstream+req.RequestURI, bytes.NewReader(inBody))
 		if err != nil {
@@ -95,6 +102,13 @@ func (r *rotator) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		r.pool.RecordRejection(idx, kind)
 		r.log.info("rotating key",
 			"from", idx, "reason", reason, "masked", maskKey(key))
+		// Genuine credit exhaustion disables the key until its billing reset
+		// (queried per-key via /v2/team/credit-usage). Rate-limit (429) and
+		// auth (401/403) are transient/global and must NOT disable.
+		if isCreditExhausted(resp.StatusCode, body) {
+			disableUntilReset(r.pool, r.client, r.cfg, idx, key, time.Now().UTC())
+			r.log.warn("key credit-disabled until reset", "key", idx, "masked", maskKey(key))
+		}
 		r.pool.Advance()
 		// loop continues with next key
 	}
@@ -106,6 +120,13 @@ func (r *rotator) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	if overCap {
 		writeRawResponse(w, lastStatus, lastHeader, lastBody)
+		return
+	}
+
+	// If every key is credit-disabled, return 503 with a clear message instead
+	// of replaying a stale rejection body that looked like a normal response.
+	if idx, _ := r.pool.Current(); idx < 0 {
+		http.Error(w, `{"success":false,"error":"all keys credit-exhausted until billing reset"}`, http.StatusServiceUnavailable)
 		return
 	}
 

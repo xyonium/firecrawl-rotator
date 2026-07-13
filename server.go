@@ -44,7 +44,7 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func healthzHandler(pool *KeyPool) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
-		if pool == nil || len(pool.keys) == 0 {
+		if pool == nil || len(pool.keys) == 0 || !pool.AnyUsable() {
 			writeJSON(w, 503, map[string]any{"ok": false})
 			return
 		}

@@ -4,11 +4,12 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoadConfig_defaults(t *testing.T) {
 	t.Setenv("FIRECRAWL_API_KEYS", "fc-a, fc-b ,, fc-c")
-	for _, k := range []string{"UPSTREAM", "PORT", "HOST", "MAX_PASSES", "MAX_BODY_BYTES", "PROXY_BASE_URL", "UPSTREAM_PROXY", "LOG_LEVEL"} {
+	for _, k := range []string{"UPSTREAM", "PORT", "HOST", "MAX_PASSES", "MAX_BODY_BYTES", "PROXY_BASE_URL", "UPSTREAM_PROXY", "LOG_LEVEL", "CREDIT_RESET_DAY"} {
 		t.Setenv(k, "")
 	}
 	cfg, err := LoadConfig()
@@ -16,14 +17,15 @@ func TestLoadConfig_defaults(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	want := Config{
-		APIKeys:      []string{"fc-a", "fc-b", "fc-c"}, // trimmed, empties dropped
-		Upstream:     "https://api.firecrawl.dev",
-		UpstreamHost: "api.firecrawl.dev",
-		Port:         "8788",
-		Host:         "0.0.0.0",
-		MaxPasses:    2,
-		MaxBodyBytes: 16 * 1024 * 1024,
-		LogLevel:     "info",
+		APIKeys:       []string{"fc-a", "fc-b", "fc-c"}, // trimmed, empties dropped
+		Upstream:      "https://api.firecrawl.dev",
+		UpstreamHost:  "api.firecrawl.dev",
+		Port:          "8788",
+		Host:          "0.0.0.0",
+		MaxPasses:     2,
+		MaxBodyBytes:  16 * 1024 * 1024,
+		LogLevel:      "info",
+		CreditResetDay: 1,
 	}
 	if !reflect.DeepEqual(cfg, want) {
 		t.Fatalf("got %+v, want %+v", cfg, want)
@@ -107,5 +109,32 @@ func TestLoadConfig_upstreamProxyBadSchemeErrors(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "not supported") {
 		t.Fatalf("error %q does not contain %q", err.Error(), "not supported")
+	}
+}
+
+func TestLoadConfig_creditResetDayValidation(t *testing.T) {
+	for _, bad := range []string{"0", "32", "-1"} {
+		t.Setenv("FIRECRAWL_API_KEYS", "fc-a")
+		t.Setenv("CREDIT_RESET_DAY", bad)
+		if _, err := LoadConfig(); err == nil {
+			t.Fatalf("CREDIT_RESET_DAY=%s: expected error, got nil", bad)
+		}
+	}
+}
+
+func TestFallbackReset(t *testing.T) {
+	// resetDay 15, on July 13 2026 -> next July 15 2026 00:00 UTC
+	now := time.Date(2026, 7, 13, 10, 0, 0, 0, time.UTC)
+	got := fallbackReset(now, 15)
+	want := time.Date(2026, 7, 15, 0, 0, 0, 0, time.UTC)
+	if !got.Equal(want) {
+		t.Fatalf("fallbackReset = %v, want %v", got, want)
+	}
+	// on July 15 after midnight -> rolls to next month (Aug 15)
+	now = time.Date(2026, 7, 15, 1, 0, 0, 0, time.UTC)
+	got = fallbackReset(now, 15)
+	want = time.Date(2026, 8, 15, 0, 0, 0, 0, time.UTC)
+	if !got.Equal(want) {
+		t.Fatalf("fallbackReset roll = %v, want %v", got, want)
 	}
 }

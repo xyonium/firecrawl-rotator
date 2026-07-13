@@ -30,13 +30,33 @@ func buildServer() (*http.Server, error) {
 	// Everything else goes to the rotator.
 	mux.Handle("/", newRotator(cfg, pool, client, log))
 
+	// Background loop: re-enable keys whose per-key billing reset has passed.
+	// Each key stores its own reset instant (queried from its account's
+	// billing period), so accounts on different anniversaries come back online
+	// independently. Restarting the container also clears all disables.
+	go resetLoop(pool, log)
+
 	log.info("firecrawl-rotator starting",
-		"keys", len(cfg.APIKeys), "upstream", cfg.Upstream, "maxPasses", cfg.MaxPasses)
+		"keys", len(cfg.APIKeys), "upstream", cfg.Upstream, "maxPasses", cfg.MaxPasses,
+		"creditResetDay", cfg.CreditResetDay)
 
 	return &http.Server{
 		Addr:    cfg.Host + ":" + cfg.Port,
 		Handler: mux,
 	}, nil
+}
+
+// resetLoop wakes every minute and re-enables any key whose disabledUntil has
+// passed. Cheap and bounded; the heavy work (the /v2/team/credit-usage query)
+// happens once, at disable time.
+func resetLoop(pool *KeyPool, log *logger) {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for range ticker.C {
+		if n := pool.ReenableDue(time.Now().UTC()); n > 0 {
+			log.info("re-enabled credit-disabled keys", "count", n)
+		}
+	}
 }
 
 func main() {

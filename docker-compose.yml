@@ -8,6 +8,7 @@ services:
       PORT: "8788"
       MAX_PASSES: "2"
       MAX_BODY_BYTES: "16777216"
+      CREDIT_RESET_DAY: "1"
       LOG_LEVEL: "info"
       # UPSTREAM_PROXY: "http://corp-proxy:3128"   # optional egress proxy
     ports:

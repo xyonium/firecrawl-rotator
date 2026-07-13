@@ -51,24 +51,54 @@ firecrawl:                     # your existing mcpo + firecrawl-mcp service
 | `MAX_PASSES` | `2` | Full passes over the pool before giving up. |
 | `MAX_BODY_BYTES` | `16777216` (16 MiB) | Cap on a buffered response body. Above it, forwarded untouched. `0` = no cap. |
 | `PROXY_BASE_URL` | (from `Host` header) | Base used when rewriting `next` URLs. |
+| `CREDIT_RESET_DAY` | `1` | Fallback day-of-month (1-31, UTC) when a key's billing reset can't be auto-detected. See "Credit disabling" below. |
 | `LOG_LEVEL` | `info` | `debug` adds per-request lines. |
 
 ## Endpoints
 
-- `GET /healthz` -> `200 {"ok":true}` if pool non-empty, else `503`. Docker healthcheck target.
-- `GET /status` -> pool size, current index, per-key stats (keys masked to last 4 chars).
+- `GET /healthz` -> `200 {"ok":true}` if at least one key is usable, else `503`. Docker healthcheck target.
+- `GET /status` -> pool size, current index, per-key stats + disabled state (keys masked to last 4 chars).
 
 ## Rotation behavior
 
 Rotates on HTTP **402** (credits), **429** (rate limit), **401/403** (bad key),
-and on error bodies matching `insufficient credits`, `rate limit`, `exceeded`,
-`payment required`, `unauthorized`, `forbidden` (catches `200 + success:false`).
+and on **failure envelopes** (`{"success":false,...}`) whose `error`/`message`
+text matches `insufficient credits`, `rate limit`, `exceeded`,
+`payment required`, `unauthorized`, `forbidden`.
+
+A **successful** response (`status < 400` with `success:true`, or no `success`
+field) **never** rotates - even if the scraped *content* happens to contain
+words like "rate limit" or "payment required". The denylist is checked against
+the Firecrawl failure envelope only, not the response body as a whole.
 
 - Tries each key up to `MAX_PASSES` times, then returns the last error verbatim.
 - **5xx and network errors do NOT rotate** (not a key problem).
 - The `next` field's absolute upstream URL is rewritten to the proxy so crawl
   pagination stays under rotation. Other occurrences of the host in response
   bodies are **never** rewritten (they may be real scraped content).
+
+## Credit disabling
+
+A key that returns a **genuine credit-exhaustion** signal (HTTP 402, or a
+`success:false` envelope mentioning `insufficient credits` / `payment required`
+/ `exceeded`) is **disabled** and skipped on all subsequent requests until its
+credits reset - it is not retried every pass (which would waste upstream calls
+and risk account flags).
+
+- The reset instant is read **per key** from that key's own
+  `GET /v2/team/credit-usage` -> `billingPeriodEnd` (a read-only endpoint that
+  costs no credits). This matters because each key belongs to a separate
+  account and resets on **that account's billing anniversary**, which is often
+  a different day per key - not a universal date.
+- If the credit-usage call fails, the key is disabled until the next
+  occurrence of `CREDIT_RESET_DAY` (UTC) as a fallback.
+- **429 (rate limit)** and **401/403 (auth)** rotate but do NOT disable -
+  they are transient or account-global, and disabling on them would take a
+  good key offline.
+- A background loop re-enables each key at its own reset instant; restarting
+  the container also clears all disables.
+- When every key is disabled, `/healthz` returns `503` and proxied requests
+  return `503 {"success":false,"error":"all keys credit-exhausted..."}`.
 
 ## Develop
 

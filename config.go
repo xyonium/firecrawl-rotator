@@ -6,6 +6,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type Config struct {
@@ -19,6 +20,7 @@ type Config struct {
 	ProxyBaseURL  string
 	UpstreamProxy string
 	LogLevel      string
+	CreditResetDay int // fallback reset day-of-month when /v2/team/credit-usage is unreachable; 1-31
 }
 
 func envStr(key, def string) string {
@@ -94,6 +96,14 @@ func LoadConfig() (Config, error) {
 		return Config{}, fmt.Errorf("MAX_BODY_BYTES must be >= 0, got %d", maxBody)
 	}
 
+	resetDay, err := envInt("CREDIT_RESET_DAY", 1)
+	if err != nil {
+		return Config{}, err
+	}
+	if resetDay < 1 || resetDay > 31 {
+		return Config{}, fmt.Errorf("CREDIT_RESET_DAY must be 1-31, got %d", resetDay)
+	}
+
 	proxyStr := strings.TrimSpace(os.Getenv("UPSTREAM_PROXY"))
 	if proxyStr != "" {
 		pu, err := url.Parse(proxyStr)
@@ -121,5 +131,19 @@ func LoadConfig() (Config, error) {
 		ProxyBaseURL:  strings.TrimSpace(os.Getenv("PROXY_BASE_URL")),
 		UpstreamProxy: proxyStr,
 		LogLevel:      envStr("LOG_LEVEL", "info"),
+		CreditResetDay: resetDay,
 	}, nil
+}
+
+// fallbackReset computes the per-key fallback reset instant: the next occurrence
+// of day-of-month resetDay, at 00:00 UTC. Used only when the live
+// /v2/team/credit-usage endpoint cannot be reached for a key.
+func fallbackReset(now time.Time, resetDay int) time.Time {
+	y, m, _ := now.UTC().Date()
+	t := time.Date(y, m, resetDay, 0, 0, 0, 0, time.UTC)
+	if !t.After(now.UTC()) {
+		// this month's reset day has passed -> next month
+		t = t.AddDate(0, 1, 0)
+	}
+	return t
 }

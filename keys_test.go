@@ -2,6 +2,7 @@ package main
 
 import (
 	"testing"
+	"time"
 )
 
 func TestKeyPool_CurrentAndAdvance(t *testing.T) {
@@ -64,4 +65,61 @@ func TestKeyPool_RecordRejectionBadKindPanics(t *testing.T) {
 		}
 	}()
 	p.RecordRejection(0, "bogus")
+}
+
+func TestKeyPool_DisableSkipsKey(t *testing.T) {
+	p := NewKeyPool([]string{"fc-a", "fc-b", "fc-c"})
+	// disable key 0; Current must skip to a usable key
+	p.Disable(0, time.Now().Add(time.Hour))
+	i, k := p.Current()
+	if i == 0 {
+		t.Fatalf("Current() returned disabled key 0 (%q)", k)
+	}
+}
+
+func TestKeyPool_AdvanceSkipsDisabled(t *testing.T) {
+	p := NewKeyPool([]string{"fc-a", "fc-b", "fc-c"})
+	// cursor at 0; disable key 1. Advance must skip 1 -> 2.
+	p.Disable(1, time.Now().Add(time.Hour))
+	i, _ := p.Advance() // from 0 -> would be 1, but 1 disabled -> 2
+	if i != 2 {
+		t.Fatalf("Advance skip-disabled = %d, want 2", i)
+	}
+}
+
+func TestKeyPool_AllDisabledReturnsMinusOne(t *testing.T) {
+	p := NewKeyPool([]string{"fc-a", "fc-b"})
+	p.Disable(0, time.Now().Add(time.Hour))
+	p.Disable(1, time.Now().Add(time.Hour))
+	if i, _ := p.Current(); i != -1 {
+		t.Fatalf("Current() with all disabled = %d, want -1", i)
+	}
+	if i, _ := p.Advance(); i != -1 {
+		t.Fatalf("Advance() with all disabled = %d, want -1", i)
+	}
+	if p.AnyUsable() {
+		t.Fatal("AnyUsable() = true, want false when all disabled")
+	}
+}
+
+func TestKeyPool_ReenableDue(t *testing.T) {
+	p := NewKeyPool([]string{"fc-a", "fc-b"})
+	now := time.Now().UTC()
+	// key 0 reset in the past -> due now; key 1 reset in the future -> not due
+	p.Disable(0, now.Add(-time.Minute))
+	p.Disable(1, now.Add(time.Hour))
+	if n := p.ReenableDue(now); n != 1 {
+		t.Fatalf("ReenableDue re-enabled %d, want 1", n)
+	}
+	if i, _ := p.Current(); i == -1 {
+		t.Fatal("after re-enabling one key, Current should be usable")
+	}
+	// key 1 still disabled
+	p.Disable(0, now.Add(-time.Minute)) // re-disable 0 to test the second
+	if n := p.ReenableDue(now); n != 1 {
+		t.Fatalf("ReenableDue second pass re-enabled %d, want 1", n)
+	}
+	if !p.AnyUsable() {
+		t.Fatal("AnyUsable should be true after re-enabling all due keys")
+	}
 }
