@@ -35,7 +35,10 @@ func buildServer() (*http.Server, error) {
 	// Warm up: fetch each key's real remainingCredits so selection starts
 	// accurate. Runs in the background so the server starts immediately; until
 	// it completes, unmeasured keys are treated as "plenty" (math.MaxInt64).
-	go refresh.RefreshAll()
+	// If the warm-up leaves any key unmeasured (transient network blip at
+	// startup), retry every minute until it succeeds - don't strand keys at
+	// "unmeasured" waiting up to 24h for the daily refresh.
+	go warmupLoop(refresh, log)
 
 	// Background loop: re-enable keys whose per-key billing reset has passed.
 	go resetLoop(pool, log)
@@ -76,6 +79,24 @@ func dailyRefreshLoop(refresh *Refresher, log *logger) {
 	defer ticker.Stop()
 	for range ticker.C {
 		refresh.DailyRefresh()
+	}
+}
+
+// warmupLoop runs the initial warm-up. If any keys remain unmeasured after a
+// pass (their credit-usage fetch failed), it retries every minute until all are
+// measured - so a transient startup network failure self-heals quickly instead
+// of leaving keys at "unmeasured" (-1) until the next daily refresh.
+func warmupLoop(refresh *Refresher, log *logger) {
+	if unmeasured := refresh.RefreshAll(); unmeasured > 0 {
+		log.warn("warm-up left keys unmeasured, will retry", "unmeasured", unmeasured)
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			if unmeasured := refresh.RefreshAll(); unmeasured == 0 {
+				log.info("warm-up complete, all keys measured")
+				return
+			}
+		}
 	}
 }
 

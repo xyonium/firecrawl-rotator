@@ -108,10 +108,13 @@ func (r *Refresher) DailyRefresh() {
 	}
 }
 
-// RefreshAll force-refreshes every key now (used at startup warm-up).
-func (r *Refresher) RefreshAll() {
+// RefreshAll force-refreshes every key now (used at startup warm-up). Returns
+// the count of keys that are STILL unmeasured after the attempt (i.e. their
+// fetch failed). The caller retries when this is > 0 so a transient startup
+// network blip self-heals instead of stranding keys at "unmeasured" for a day.
+func (r *Refresher) RefreshAll() int {
 	if r == nil {
-		return
+		return 0
 	}
 	var wg sync.WaitGroup
 	for i := range r.keys {
@@ -125,6 +128,13 @@ func (r *Refresher) RefreshAll() {
 		}(i)
 	}
 	wg.Wait()
+	unmeasured := 0
+	for _, k := range r.pool.Snapshot().Keys {
+		if k.RemainingCredits < 0 {
+			unmeasured++
+		}
+	}
+	return unmeasured
 }
 
 // refreshOne fetches one key's live usage and applies it. Updates lastDaily so
@@ -133,7 +143,7 @@ func (r *Refresher) refreshOne(idx int) {
 	if idx < 0 || idx >= len(r.keys) {
 		return
 	}
-	got := refreshKey(r.pool, r.client, r.cfg, idx, r.keys[idx])
+	got := refreshKey(r.pool, r.client, r.cfg, idx, r.keys[idx], r.log)
 	if got >= 0 {
 		r.log.debug("refreshed credits", "key", idx, "remaining", got)
 		r.mu.Lock()

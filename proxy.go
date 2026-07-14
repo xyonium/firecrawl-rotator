@@ -98,7 +98,7 @@ func (r *rotator) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		r.log.info("rotating key", "from", idx, "reason", reason, "masked", maskKey(key))
 		// Genuine credit exhaustion disables the key until its billing reset.
 		if isCreditExhausted(status, body) {
-			disableUntilReset(r.pool, r.client, r.cfg, idx, key, time.Now().UTC())
+			disableUntilReset(r.pool, r.client, r.cfg, idx, key, time.Now().UTC(), r.log)
 			r.log.warn("key credit-disabled until reset", "key", idx, "masked", maskKey(key))
 		}
 		prev := idx
