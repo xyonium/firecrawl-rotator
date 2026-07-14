@@ -2,9 +2,12 @@
 
 A small reverse proxy that sits between **firecrawl-mcp** and the Firecrawl API
 (`api.firecrawl.dev`). It holds a pool of Firecrawl API keys, injects one per
-request, and **rotates to the next key on rejection** (credit exhaustion, rate
-limit, bad key) - retrying transparently so the MCP client never sees a
-key-level failure until the whole pool is exhausted.
+request, and **picks the key with the most remaining credits**, rotating to the
+next-richest when one drops to a low threshold. Transient errors (403, 5xx,
+network) are retried with exponential backoff on the same key; genuine key
+rejections (402/429/401) rotate. When every key is below the stop threshold the
+proxy refuses requests (503) so the MCP client sees a clean failure instead of
+burning dead keys.
 
 It also rewrites Firecrawl's `next` pagination URLs so crawl pagination flows
 back through the proxy and stays under rotation.

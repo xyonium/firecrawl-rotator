@@ -19,6 +19,10 @@ func TestMain_SmokeHealthz(t *testing.T) {
 	t.Setenv("MAX_PASSES", "")
 	t.Setenv("MAX_BODY_BYTES", "")
 	t.Setenv("LOG_LEVEL", "")
+	t.Setenv("CREDIT_RESET_DAY", "")
+	t.Setenv("LOW_CREDIT_THRESHOLD", "")
+	t.Setenv("STOP_CREDIT_THRESHOLD", "")
+	t.Setenv("CREDIT_REFRESH_INTERVAL", "")
 	srv, err := buildServer()
 	if err != nil {
 		t.Fatalf("buildServer: %v", err)

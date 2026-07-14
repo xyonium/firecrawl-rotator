@@ -7,11 +7,10 @@ import (
 )
 
 // lowRefreshThreshold is the predicted-credit level below which a key is
-// refreshed more often (every lowRefreshInterval) instead of only on switch or
-// daily. Matches the user's "< 100 -> every 5 minutes" rule.
+// refreshed more often (every r.lowInterval) instead of only on switch or
+// daily. Matches the user's "< 100 -> every few minutes" rule.
 const (
 	lowRefreshThreshold = 100
-	lowRefreshInterval  = 5 * time.Minute
 	dailyRefresh        = 24 * time.Hour
 )
 
@@ -19,31 +18,33 @@ const (
 //   - refresh the key we just switched AWAY from and the one we switched TO
 //     (on rotation),
 //   - refresh any key whose PREDICTED remaining has dropped below
-//     lowRefreshThreshold, throttled to once per lowRefreshInterval,
+//     lowRefreshThreshold, throttled to once per lowInterval (CREDIT_REFRESH_INTERVAL),
 //   - refresh every key once per day as a catch-all.
 // It never blocks the request path: refreshes run in their own goroutine.
 type Refresher struct {
-	pool      *KeyPool
-	client    *http.Client
-	cfg       Config
-	keys      []string
-	log       *logger
+	pool       *KeyPool
+	client     *http.Client
+	cfg        Config
+	keys       []string
+	log        *logger
+	lowInterval time.Duration // CREDIT_REFRESH_INTERVAL as a Duration
 
-	mu             sync.Mutex
-	lastLow        []time.Time // last refresh-at when predicted was < lowRefreshThreshold
-	lastDaily      []time.Time // last daily refresh-at per key
+	mu        sync.Mutex
+	lastLow   []time.Time // last refresh-at when predicted was < lowRefreshThreshold
+	lastDaily []time.Time // last daily refresh-at per key
 }
 
 func NewRefresher(pool *KeyPool, client *http.Client, cfg Config, log *logger) *Refresher {
 	n := len(pool.Snapshot().Keys)
 	return &Refresher{
-		pool:     pool,
-		client:   client,
-		cfg:      cfg,
-		keys:     cfg.APIKeys,
-		log:      log,
-		lastLow:  make([]time.Time, n),
-		lastDaily: make([]time.Time, n),
+		pool:        pool,
+		client:      client,
+		cfg:         cfg,
+		keys:        cfg.APIKeys,
+		log:         log,
+		lowInterval: time.Duration(cfg.CreditRefreshSec) * time.Second,
+		lastLow:     make([]time.Time, n),
+		lastDaily:   make([]time.Time, n),
 	}
 }
 
@@ -64,8 +65,8 @@ func (r *Refresher) OnSwitch(fromIdx, toIdx int) {
 }
 
 // MaybeRefreshLow refreshes a key in the background if its PREDICTED remaining
-// is below lowRefreshThreshold and it hasn't been refreshed in
-// lowRefreshInterval. Called by the rotator after each successful response.
+// is below lowRefreshThreshold and it hasn't been refreshed in lowInterval.
+// Called by the rotator after each successful response.
 func (r *Refresher) MaybeRefreshLow(idx int) {
 	if r == nil || idx < 0 || idx >= len(r.keys) {
 		return
@@ -77,7 +78,7 @@ func (r *Refresher) MaybeRefreshLow(idx int) {
 	}
 	r.mu.Lock()
 	last := r.lastLow[idx]
-	if !last.IsZero() && time.Since(last) < lowRefreshInterval {
+	if !last.IsZero() && time.Since(last) < r.lowInterval {
 		r.mu.Unlock()
 		return
 	}
