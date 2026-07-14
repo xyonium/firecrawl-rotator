@@ -20,7 +20,10 @@ type Config struct {
 	ProxyBaseURL  string
 	UpstreamProxy string
 	LogLevel      string
-	CreditResetDay int // fallback reset day-of-month when /v2/team/credit-usage is unreachable; 1-31
+	CreditResetDay      int   // fallback reset day-of-month when /v2/team/credit-usage is unreachable; 1-31
+	LowCreditThreshold  int64 // switch off a key when its remainingCredits drops to/below this (default 10)
+	StopCreditThreshold int64 // stop accepting requests when every key is below this (default 2)
+	CreditRefreshSec    int   // seconds between background remainingCredits refreshes (default 300)
 }
 
 func envStr(key, def string) string {
@@ -104,6 +107,31 @@ func LoadConfig() (Config, error) {
 		return Config{}, fmt.Errorf("CREDIT_RESET_DAY must be 1-31, got %d", resetDay)
 	}
 
+	lowCredit, err := envInt64("LOW_CREDIT_THRESHOLD", 10)
+	if err != nil {
+		return Config{}, err
+	}
+	if lowCredit < 0 {
+		return Config{}, fmt.Errorf("LOW_CREDIT_THRESHOLD must be >= 0, got %d", lowCredit)
+	}
+	stopCredit, err := envInt64("STOP_CREDIT_THRESHOLD", 2)
+	if err != nil {
+		return Config{}, err
+	}
+	if stopCredit < 0 {
+		return Config{}, fmt.Errorf("STOP_CREDIT_THRESHOLD must be >= 0, got %d", stopCredit)
+	}
+	if stopCredit > lowCredit {
+		return Config{}, fmt.Errorf("STOP_CREDIT_THRESHOLD (%d) must be <= LOW_CREDIT_THRESHOLD (%d)", stopCredit, lowCredit)
+	}
+	refreshSec, err := envInt("CREDIT_REFRESH_INTERVAL", 300)
+	if err != nil {
+		return Config{}, err
+	}
+	if refreshSec < 10 {
+		return Config{}, fmt.Errorf("CREDIT_REFRESH_INTERVAL must be >= 10s, got %d", refreshSec)
+	}
+
 	proxyStr := strings.TrimSpace(os.Getenv("UPSTREAM_PROXY"))
 	if proxyStr != "" {
 		pu, err := url.Parse(proxyStr)
@@ -130,8 +158,11 @@ func LoadConfig() (Config, error) {
 		MaxBodyBytes:  maxBody,
 		ProxyBaseURL:  strings.TrimSpace(os.Getenv("PROXY_BASE_URL")),
 		UpstreamProxy: proxyStr,
-		LogLevel:      envStr("LOG_LEVEL", "info"),
-		CreditResetDay: resetDay,
+		LogLevel:           envStr("LOG_LEVEL", "info"),
+		CreditResetDay:     resetDay,
+		LowCreditThreshold: lowCredit,
+		StopCreditThreshold: stopCredit,
+		CreditRefreshSec:   refreshSec,
 	}, nil
 }
 

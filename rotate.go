@@ -33,10 +33,14 @@ func firecrawlFailure(status int, body []byte) bool {
 // key-level rejection worth rotating on. Crucially, a successful (status<400,
 // success:true) response NEVER rotates, even if the scraped content happens to
 // contain words like "rate limit" or "payment required".
+//
+// Note: 403 is NOT here - a 403 is usually a transient edge/WAF/network layer
+// rejection (not a per-key problem), so it is retried with backoff on the SAME
+// key via shouldRetry before any rotation is considered.
 func shouldRotate(status int, body []byte) (bool, string) {
 	// Hard status codes that always mean "try another key".
 	switch status {
-	case 402, 429, 401, 403:
+	case 402, 429, 401:
 		return true, "status " + strconv.Itoa(status)
 	}
 	// Otherwise only treat it as a rejection if it is a Firecrawl failure
@@ -48,6 +52,20 @@ func shouldRotate(status int, body []byte) (bool, string) {
 		return true, "body:" + string(m)
 	}
 	return false, ""
+}
+
+// shouldRetry reports whether an error is transient and worth retrying on the
+// SAME key with backoff before giving up or rotating: network errors, 403
+// (edge/WAF), 408 (timeout), and 5xx (upstream). These are NOT key problems.
+func shouldRetry(status int, networkErr bool) bool {
+	if networkErr {
+		return true
+	}
+	switch status {
+	case 403, 408, 500, 502, 503, 504:
+		return true
+	}
+	return false
 }
 
 // isCreditExhausted reports whether a rejection means the key's credits are

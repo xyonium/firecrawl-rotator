@@ -3,10 +3,36 @@ package main
 import "testing"
 
 func TestShouldRotate_StatusSet(t *testing.T) {
-	for _, code := range []int{402, 429, 401, 403} {
+	for _, code := range []int{402, 429, 401} {
 		ok, _ := shouldRotate(code, []byte(`{}`))
 		if !ok {
 			t.Errorf("status %d: expected rotate, got false", code)
+		}
+	}
+}
+
+func TestShouldRotate_403DoesNotRotate(t *testing.T) {
+	// 403 is transient (edge/WAF), handled by shouldRetry, NOT shouldRotate.
+	if ok, _ := shouldRotate(403, []byte(`{}`)); ok {
+		t.Error("403 should not rotate (transient, retried via shouldRetry)")
+	}
+}
+
+func TestShouldRetry_Transient(t *testing.T) {
+	for _, code := range []int{403, 408, 500, 502, 503, 504} {
+		if !shouldRetry(code, false) {
+			t.Errorf("status %d: expected retryable, got false", code)
+		}
+	}
+	if !shouldRetry(0, true) {
+		t.Error("network error should be retryable")
+	}
+}
+
+func TestShouldRetry_NonTransient(t *testing.T) {
+	for _, code := range []int{200, 400, 401, 402, 404, 429} {
+		if shouldRetry(code, false) {
+			t.Errorf("status %d: expected NOT retryable, got true", code)
 		}
 	}
 }

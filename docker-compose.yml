@@ -9,6 +9,9 @@ services:
       MAX_PASSES: "2"
       MAX_BODY_BYTES: "16777216"
       CREDIT_RESET_DAY: "1"
+      LOW_CREDIT_THRESHOLD: "10"
+      STOP_CREDIT_THRESHOLD: "2"
+      CREDIT_REFRESH_INTERVAL: "300"
       LOG_LEVEL: "info"
       # UPSTREAM_PROXY: "http://corp-proxy:3128"   # optional egress proxy
     ports:

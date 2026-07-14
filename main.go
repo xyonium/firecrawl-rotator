@@ -14,6 +14,7 @@ func buildServer() (*http.Server, error) {
 	}
 
 	pool := NewKeyPool(cfg.APIKeys)
+	pool.SetThresholds(cfg.LowCreditThreshold, cfg.StopCreditThreshold)
 	tr, err := buildTransport(cfg)
 	if err != nil {
 		return nil, err
@@ -23,22 +24,30 @@ func buildServer() (*http.Server, error) {
 		Timeout:   30 * time.Second,
 	}
 	log := newLogger(cfg.LogLevel)
+	refresh := NewRefresher(pool, client, cfg, log)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", healthzHandler(pool))
 	mux.HandleFunc("/status", statusHandler(pool))
 	// Everything else goes to the rotator.
-	mux.Handle("/", newRotator(cfg, pool, client, log))
+	mux.Handle("/", newRotator(cfg, pool, client, log, refresh))
+
+	// Warm up: fetch each key's real remainingCredits so selection starts
+	// accurate. Runs in the background so the server starts immediately; until
+	// it completes, unmeasured keys are treated as "plenty" (math.MaxInt64).
+	go refresh.RefreshAll()
 
 	// Background loop: re-enable keys whose per-key billing reset has passed.
-	// Each key stores its own reset instant (queried from its account's
-	// billing period), so accounts on different anniversaries come back online
-	// independently. Restarting the container also clears all disables.
 	go resetLoop(pool, log)
+	// Background loop: daily catch-all refresh of every key's credits.
+	go dailyRefreshLoop(refresh, log)
 
 	log.info("firecrawl-rotator starting",
 		"keys", len(cfg.APIKeys), "upstream", cfg.Upstream, "maxPasses", cfg.MaxPasses,
-		"creditResetDay", cfg.CreditResetDay)
+		"creditResetDay", cfg.CreditResetDay,
+		"lowCreditThreshold", cfg.LowCreditThreshold,
+		"stopCreditThreshold", cfg.StopCreditThreshold,
+		"creditRefreshSec", cfg.CreditRefreshSec)
 
 	return &http.Server{
 		Addr:    cfg.Host + ":" + cfg.Port,
@@ -56,6 +65,17 @@ func resetLoop(pool *KeyPool, log *logger) {
 		if n := pool.ReenableDue(time.Now().UTC()); n > 0 {
 			log.info("re-enabled credit-disabled keys", "count", n)
 		}
+	}
+}
+
+// dailyRefreshLoop wakes hourly and asks the refresher to refresh any key whose
+// last daily refresh is older than 24h. (The refresher itself enforces the
+// 24h-per-key cadence; this ticker just pokes it.)
+func dailyRefreshLoop(refresh *Refresher, log *logger) {
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+	for range ticker.C {
+		refresh.DailyRefresh()
 	}
 }
 

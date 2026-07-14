@@ -9,7 +9,7 @@ import (
 
 func TestLoadConfig_defaults(t *testing.T) {
 	t.Setenv("FIRECRAWL_API_KEYS", "fc-a, fc-b ,, fc-c")
-	for _, k := range []string{"UPSTREAM", "PORT", "HOST", "MAX_PASSES", "MAX_BODY_BYTES", "PROXY_BASE_URL", "UPSTREAM_PROXY", "LOG_LEVEL", "CREDIT_RESET_DAY"} {
+	for _, k := range []string{"UPSTREAM", "PORT", "HOST", "MAX_PASSES", "MAX_BODY_BYTES", "PROXY_BASE_URL", "UPSTREAM_PROXY", "LOG_LEVEL", "CREDIT_RESET_DAY", "LOW_CREDIT_THRESHOLD", "STOP_CREDIT_THRESHOLD", "CREDIT_REFRESH_INTERVAL"} {
 		t.Setenv(k, "")
 	}
 	cfg, err := LoadConfig()
@@ -26,6 +26,9 @@ func TestLoadConfig_defaults(t *testing.T) {
 		MaxBodyBytes:  16 * 1024 * 1024,
 		LogLevel:      "info",
 		CreditResetDay: 1,
+		LowCreditThreshold: 10,
+		StopCreditThreshold: 2,
+		CreditRefreshSec: 300,
 	}
 	if !reflect.DeepEqual(cfg, want) {
 		t.Fatalf("got %+v, want %+v", cfg, want)
