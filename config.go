@@ -142,9 +142,9 @@ func LoadConfig() (Config, error) {
 			return Config{}, fmt.Errorf("UPSTREAM_PROXY %q is not a valid proxy URL (host required)", proxyStr)
 		}
 		switch pu.Scheme {
-		case "http", "https", "socks5":
+		case "http", "https", "socks5", "socks5h":
 		default:
-			return Config{}, fmt.Errorf("UPSTREAM_PROXY scheme %q not supported (use http/https/socks5)", pu.Scheme)
+			return Config{}, fmt.Errorf("UPSTREAM_PROXY scheme %q not supported (use http/https/socks5/socks5h)", pu.Scheme)
 		}
 	}
 

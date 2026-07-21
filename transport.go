@@ -19,6 +19,13 @@ func buildTransport(cfg Config) (*http.Transport, error) {
 		if err != nil {
 			return nil, err
 		}
+		if proxyURL.Scheme == "socks5h" {
+			// curl-style socks5h (DNS resolved by the proxy) maps to the
+			// stdlib's socks5 handling, which already resolves via the
+			// SOCKS5 server. Normalize so the scheme is one the stdlib
+			// recognizes directly.
+			proxyURL.Scheme = "socks5"
+		}
 		tr.Proxy = http.ProxyURL(proxyURL)
 	} else {
 		// Honor system HTTPS_PROXY/HTTP_PROXY/NO_PROXY, curl-style. The

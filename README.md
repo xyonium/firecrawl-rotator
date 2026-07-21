@@ -47,7 +47,7 @@ firecrawl:                     # your existing mcpo + firecrawl-mcp service
 |-----|---------|---------|
 | `FIRECRAWL_API_KEYS` | (required) | Comma-separated key pool. |
 | `UPSTREAM` | `https://api.firecrawl.dev` | Upstream Firecrawl API base. |
-| `UPSTREAM_PROXY` | (unset) | Explicit forward proxy for egress (`http`/`https`/`socks5`). Wins over system vars. |
+| `UPSTREAM_PROXY` | (unset) | Explicit forward proxy for egress (`http`/`https`/`socks5`/`socks5h`). With `socks5h`, DNS is resolved through the SOCKS5 server (same as `socks5`; the `h` form is accepted for curl/SearXNG-style configs). Wins over system vars. |
 | `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` | (unset) | System/curl-style proxy env, honored when `UPSTREAM_PROXY` is unset. |
 | `PORT` | `8788` | Listen port. |
 | `HOST` | `0.0.0.0` | Listen address. |

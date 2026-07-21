@@ -23,6 +23,24 @@ func TestBuildTransport_UpstreamProxy(t *testing.T) {
 	}
 }
 
+func TestBuildTransport_Socks5hAccepted(t *testing.T) {
+	// curl/SearXNG-style socks5h:// is normalized to socks5:// (the Go stdlib
+	// resolves DNS via the SOCKS5 server for either form) and routed.
+	cfg := Config{UpstreamProxy: "socks5h://192.168.254.253:1091"}
+	tr, err := buildTransport(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	u, _ := url.Parse("https://api.firecrawl.dev/v2/search")
+	proxyURL, err := tr.Proxy(&http.Request{URL: u})
+	if err != nil {
+		t.Fatalf("Proxy() error: %v", err)
+	}
+	if proxyURL == nil || proxyURL.Scheme != "socks5" || proxyURL.Host != "192.168.254.253:1091" {
+		t.Fatalf("proxyURL = %v, want socks5://192.168.254.253:1091", proxyURL)
+	}
+}
+
 func TestBuildTransport_SystemEnvFallback(t *testing.T) {
 	// When UPSTREAM_PROXY is empty, buildTransport wires the stdlib
 	// http.ProxyFromEnvironment (curl-style HTTPS_PROXY/HTTP_PROXY/NO_PROXY).
