@@ -24,6 +24,17 @@ type Config struct {
 	LowCreditThreshold  int64 // switch off a key when its remainingCredits drops to/below this (default 10)
 	StopCreditThreshold int64 // stop accepting requests when every key is below this (default 2)
 	CreditRefreshSec    int   // seconds between background remainingCredits refreshes (default 300)
+	Tavily              TavilyConfig
+}
+
+// TavilyConfig holds the Tavily profile's settings. The profile is disabled
+// when APIKeys is empty.
+type TavilyConfig struct {
+	APIKeys     []string
+	Upstream    string
+	RoutePrefix string
+	LowCredit   int64
+	StopCredit  int64
 }
 
 func envStr(key, def string) string {
@@ -148,8 +159,14 @@ func LoadConfig() (Config, error) {
 		}
 	}
 
+	tavily, err := loadTavilyConfig(lowCredit, stopCredit)
+	if err != nil {
+		return Config{}, err
+	}
+
 	return Config{
 		APIKeys:       keys,
+		Tavily:        tavily,
 		Upstream:      strings.TrimRight(upstream, "/"),
 		UpstreamHost:  u.Host,
 		Port:          envStr("PORT", "8788"),
@@ -164,6 +181,51 @@ func LoadConfig() (Config, error) {
 		StopCreditThreshold: stopCredit,
 		CreditRefreshSec:   refreshSec,
 	}, nil
+}
+
+// loadTavilyConfig parses the TAVILY_* env vars. Tavily thresholds default to
+// the shared LOW/STOP values. The route prefix must start with '/', must not
+// end with '/', and must not shadow the reserved /healthz or /status paths.
+func loadTavilyConfig(sharedLow, sharedStop int64) (TavilyConfig, error) {
+	t := TavilyConfig{
+		APIKeys:     parseKeys(os.Getenv("TAVILY_API_KEYS")),
+		RoutePrefix: envStr("TAVILY_ROUTE_PREFIX", "/tavily"),
+		LowCredit:   sharedLow,
+		StopCredit:  sharedStop,
+	}
+
+	upstream := envStr("TAVILY_UPSTREAM", "https://api.tavily.com")
+	tu, err := url.Parse(upstream)
+	if err != nil || tu.Host == "" || (tu.Scheme != "http" && tu.Scheme != "https") {
+		return TavilyConfig{}, fmt.Errorf("TAVILY_UPSTREAM %q is not a valid http(s) URL", upstream)
+	}
+	t.Upstream = strings.TrimRight(upstream, "/")
+
+	if !strings.HasPrefix(t.RoutePrefix, "/") || len(t.RoutePrefix) < 2 || strings.HasSuffix(t.RoutePrefix, "/") {
+		return TavilyConfig{}, fmt.Errorf("TAVILY_ROUTE_PREFIX %q must start with '/' and be a non-root path without trailing slash", t.RoutePrefix)
+	}
+	if t.RoutePrefix == "/healthz" || t.RoutePrefix == "/status" {
+		return TavilyConfig{}, fmt.Errorf("TAVILY_ROUTE_PREFIX %q shadows a reserved path", t.RoutePrefix)
+	}
+
+	if v := strings.TrimSpace(os.Getenv("TAVILY_LOW_CREDIT_THRESHOLD")); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 0 {
+			return TavilyConfig{}, fmt.Errorf("TAVILY_LOW_CREDIT_THRESHOLD must be a non-negative integer, got %q", v)
+		}
+		t.LowCredit = n
+	}
+	if v := strings.TrimSpace(os.Getenv("TAVILY_STOP_CREDIT_THRESHOLD")); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < 0 {
+			return TavilyConfig{}, fmt.Errorf("TAVILY_STOP_CREDIT_THRESHOLD must be a non-negative integer, got %q", v)
+		}
+		t.StopCredit = n
+	}
+	if t.StopCredit > t.LowCredit {
+		return TavilyConfig{}, fmt.Errorf("TAVILY_STOP_CREDIT_THRESHOLD (%d) must be <= TAVILY_LOW_CREDIT_THRESHOLD (%d)", t.StopCredit, t.LowCredit)
+	}
+	return t, nil
 }
 
 // fallbackReset computes the per-key fallback reset instant: the next occurrence

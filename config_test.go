@@ -9,7 +9,7 @@ import (
 
 func TestLoadConfig_defaults(t *testing.T) {
 	t.Setenv("FIRECRAWL_API_KEYS", "fc-a, fc-b ,, fc-c")
-	for _, k := range []string{"UPSTREAM", "PORT", "HOST", "MAX_PASSES", "MAX_BODY_BYTES", "PROXY_BASE_URL", "UPSTREAM_PROXY", "LOG_LEVEL", "CREDIT_RESET_DAY", "LOW_CREDIT_THRESHOLD", "STOP_CREDIT_THRESHOLD", "CREDIT_REFRESH_INTERVAL"} {
+	for _, k := range []string{"UPSTREAM", "PORT", "HOST", "MAX_PASSES", "MAX_BODY_BYTES", "PROXY_BASE_URL", "UPSTREAM_PROXY", "LOG_LEVEL", "CREDIT_RESET_DAY", "LOW_CREDIT_THRESHOLD", "STOP_CREDIT_THRESHOLD", "CREDIT_REFRESH_INTERVAL", "TAVILY_API_KEYS", "TAVILY_UPSTREAM", "TAVILY_ROUTE_PREFIX", "TAVILY_LOW_CREDIT_THRESHOLD", "TAVILY_STOP_CREDIT_THRESHOLD"} {
 		t.Setenv(k, "")
 	}
 	cfg, err := LoadConfig()
@@ -29,6 +29,13 @@ func TestLoadConfig_defaults(t *testing.T) {
 		LowCreditThreshold: 10,
 		StopCreditThreshold: 2,
 		CreditRefreshSec: 300,
+		Tavily: TavilyConfig{
+			APIKeys:     nil,
+			Upstream:    "https://api.tavily.com",
+			RoutePrefix: "/tavily",
+			LowCredit:   10,
+			StopCredit:  2,
+		},
 	}
 	if !reflect.DeepEqual(cfg, want) {
 		t.Fatalf("got %+v, want %+v", cfg, want)
@@ -139,5 +146,78 @@ func TestFallbackReset(t *testing.T) {
 	want = time.Date(2026, 8, 15, 0, 0, 0, 0, time.UTC)
 	if !got.Equal(want) {
 		t.Fatalf("fallbackReset roll = %v, want %v", got, want)
+	}
+}
+
+func TestLoadConfig_tavilyDefaultsWhenUnset(t *testing.T) {
+	t.Setenv("FIRECRAWL_API_KEYS", "fc-a")
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.Tavily.APIKeys) != 0 {
+		t.Fatalf("Tavily.APIKeys = %v, want empty (profile disabled)", cfg.Tavily.APIKeys)
+	}
+	// Defaults are still populated so the profile is ready if keys appear.
+	if cfg.Tavily.Upstream != "https://api.tavily.com" {
+		t.Fatalf("Tavily.Upstream = %q", cfg.Tavily.Upstream)
+	}
+	if cfg.Tavily.RoutePrefix != "/tavily" {
+		t.Fatalf("Tavily.RoutePrefix = %q", cfg.Tavily.RoutePrefix)
+	}
+	if cfg.Tavily.LowCredit != cfg.LowCreditThreshold || cfg.Tavily.StopCredit != cfg.StopCreditThreshold {
+		t.Fatalf("tavily thresholds = %d/%d, want shared %d/%d",
+			cfg.Tavily.LowCredit, cfg.Tavily.StopCredit, cfg.LowCreditThreshold, cfg.StopCreditThreshold)
+	}
+}
+
+func TestLoadConfig_tavilyKeysParsed(t *testing.T) {
+	t.Setenv("FIRECRAWL_API_KEYS", "fc-a")
+	t.Setenv("TAVILY_API_KEYS", "tvly-a, tvly-b")
+	t.Setenv("TAVILY_ROUTE_PREFIX", "/tv")
+	t.Setenv("TAVILY_LOW_CREDIT_THRESHOLD", "5")
+	t.Setenv("TAVILY_STOP_CREDIT_THRESHOLD", "1")
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.Tavily.APIKeys) != 2 || cfg.Tavily.APIKeys[0] != "tvly-a" || cfg.Tavily.APIKeys[1] != "tvly-b" {
+		t.Fatalf("Tavily.APIKeys = %v", cfg.Tavily.APIKeys)
+	}
+	if cfg.Tavily.RoutePrefix != "/tv" {
+		t.Fatalf("Tavily.RoutePrefix = %q", cfg.Tavily.RoutePrefix)
+	}
+	if cfg.Tavily.LowCredit != 5 || cfg.Tavily.StopCredit != 1 {
+		t.Fatalf("tavily thresholds = %d/%d", cfg.Tavily.LowCredit, cfg.Tavily.StopCredit)
+	}
+}
+
+func TestLoadConfig_tavilyBadPrefixErrors(t *testing.T) {
+	t.Setenv("FIRECRAWL_API_KEYS", "fc-a")
+	t.Setenv("TAVILY_API_KEYS", "tvly-a")
+	for _, bad := range []string{"tavily", "/", "/tavily/", "/healthz", "/status"} {
+		t.Setenv("TAVILY_ROUTE_PREFIX", bad)
+		if _, err := LoadConfig(); err == nil {
+			t.Fatalf("expected error for TAVILY_ROUTE_PREFIX=%q, got nil", bad)
+		}
+	}
+}
+
+func TestLoadConfig_tavilyBadUpstreamErrors(t *testing.T) {
+	t.Setenv("FIRECRAWL_API_KEYS", "fc-a")
+	t.Setenv("TAVILY_API_KEYS", "tvly-a")
+	t.Setenv("TAVILY_UPSTREAM", "ftp://example.com")
+	if _, err := LoadConfig(); err == nil {
+		t.Fatal("expected error for TAVILY_UPSTREAM=ftp://example.com, got nil")
+	}
+}
+
+func TestLoadConfig_tavilyStopAboveLowErrors(t *testing.T) {
+	t.Setenv("FIRECRAWL_API_KEYS", "fc-a")
+	t.Setenv("TAVILY_API_KEYS", "tvly-a")
+	t.Setenv("TAVILY_LOW_CREDIT_THRESHOLD", "2")
+	t.Setenv("TAVILY_STOP_CREDIT_THRESHOLD", "5")
+	if _, err := LoadConfig(); err == nil {
+		t.Fatal("expected error when TAVILY_STOP > TAVILY_LOW, got nil")
 	}
 }
