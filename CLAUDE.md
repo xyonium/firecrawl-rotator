@@ -81,7 +81,7 @@ Key files and their roles:
 | `refresh.go` | `Refresher` per profile: `OnSwitch`, `MaybeRefreshLow`, `DailyRefresh`, `RefreshAll`. All refreshes run in background goroutines. |
 | `rewrite.go` | `rewriteNext` rewrites **only** `"next"` keys with absolute URLs on `upstreamHost`. `paginationGuard` warns on non-terminal crawl status with no `next`. Other host occurrences are never rewritten. |
 | `transport.go` | `buildTransport` - `UPSTREAM_PROXY` wins; else `http.ProxyFromEnvironment` (curl-style). `ForceAttemptHTTP2: true`. |
-| `creditusage.go` | Firecrawl: `fetchUsage` reads key's `remainingCredits` + `billingPeriodEnd` from `GET /v2/team/credit-usage` (read-only, no credit cost). `tavilyUsage.go`: Tavily: `fetchTavilyUsage` reads `remaining` + `max_credits` from `GET /usage` (per-key). |
+| `creditusage.go` | Firecrawl: `fetchUsage` reads key's `remainingCredits` + `billingPeriodEnd` from `GET /v2/team/credit-usage` (read-only, no credit cost). Tavily: `fetchTavilyUsage` reads `key.usage`/`key.limit`, `account.plan_usage`/`plan_limit`, `account.paygo_usage`/`paygo_limit` from `GET /usage` (per-key); effective remaining = min over layers of (limit - usage), skipping unlimited layers. |
 | `server.go` | `logger` (stderr, key=value; `LOG_LEVEL=debug`), `healthzHandler` (503 when no usable key), `statusHandler`. |
 
 ### Non-obvious design decisions (respect these when editing)

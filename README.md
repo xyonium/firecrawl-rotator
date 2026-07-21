@@ -152,9 +152,14 @@ Tavily. Requests whose path starts with `TAVILY_ROUTE_PREFIX` (default
   status code, never by scanning response body text. The Firecrawl denylist
   never applies to Tavily responses.
 - **Usage tracking**: the proxy calls `GET /usage` on the Tavily upstream
-  (per-key) to read `remaining_credits` (the `remaining` field at the top
-  level) and `max_credits`. Keys whose `remaining` is at or below
-  `TAVILY_STOP_CREDIT_THRESHOLD` are disabled until `next_reset`.
+  (per-key) to read `key.usage` / `key.limit`,
+  `account.plan_usage` / `plan_limit`,
+  and `account.paygo_usage` / `paygo_limit`. Effective remaining
+  credits = min over layers of (limit - usage), skipping any layer whose
+  limit <= 0 (unlimited/unmeasured). If all layers are unlimited the key
+  stays unmeasured. Tavily returns no billing-period end, so a disabled key
+  re-enables at the `CREDIT_RESET_DAY` fallback, same as the Firecrawl
+  fallback path.
 - **Credit thresholds**: `TAVILY_LOW_CREDIT_THRESHOLD` and
   `TAVILY_STOP_CREDIT_THRESHOLD` mirror the Firecrawl thresholds but
   apply to the Tavily pool independently.
