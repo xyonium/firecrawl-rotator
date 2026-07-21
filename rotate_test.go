@@ -3,8 +3,9 @@ package main
 import "testing"
 
 func TestShouldRotate_StatusSet(t *testing.T) {
+	p := &Profile{Name: "firecrawl"}
 	for _, code := range []int{402, 429, 401} {
-		ok, _ := shouldRotate(code, []byte(`{}`))
+		ok, _ := p.shouldRotate(code, []byte(`{}`))
 		if !ok {
 			t.Errorf("status %d: expected rotate, got false", code)
 		}
@@ -12,8 +13,9 @@ func TestShouldRotate_StatusSet(t *testing.T) {
 }
 
 func TestShouldRotate_403DoesNotRotate(t *testing.T) {
+	p := &Profile{Name: "firecrawl"}
 	// 403 is transient (edge/WAF), handled by shouldRetry, NOT shouldRotate.
-	if ok, _ := shouldRotate(403, []byte(`{}`)); ok {
+	if ok, _ := p.shouldRotate(403, []byte(`{}`)); ok {
 		t.Error("403 should not rotate (transient, retried via shouldRetry)")
 	}
 }
@@ -38,8 +40,9 @@ func TestShouldRetry_NonTransient(t *testing.T) {
 }
 
 func TestShouldRotate_NegativeStatus(t *testing.T) {
+	p := &Profile{Name: "firecrawl"}
 	for _, code := range []int{200, 404, 500, 502, 301} {
-		ok, _ := shouldRotate(code, []byte(`{"success":true}`))
+		ok, _ := p.shouldRotate(code, []byte(`{"success":true}`))
 		if ok {
 			t.Errorf("status %d: expected no rotate, got true", code)
 		}
@@ -47,6 +50,7 @@ func TestShouldRotate_NegativeStatus(t *testing.T) {
 }
 
 func TestShouldRotate_BodyPatterns(t *testing.T) {
+	p := &Profile{Name: "firecrawl"}
 	cases := [][]byte{
 		[]byte(`{"success":false,"error":"Insufficient credits"}`),
 		[]byte(`{"success":false,"error":"You have exceeded your rate limit"}`),
@@ -57,7 +61,7 @@ func TestShouldRotate_BodyPatterns(t *testing.T) {
 	}
 	for _, body := range cases {
 		// 200 + success:false body that matches -> rotate
-		ok, reason := shouldRotate(200, body)
+		ok, reason := p.shouldRotate(200, body)
 		if !ok {
 			t.Errorf("body %q: expected rotate, got false", body)
 		}
@@ -68,11 +72,12 @@ func TestShouldRotate_BodyPatterns(t *testing.T) {
 }
 
 func TestShouldRotate_NoMatch(t *testing.T) {
-	ok, _ := shouldRotate(200, []byte(`{"success":true,"data":[]}`))
+	p := &Profile{Name: "firecrawl"}
+	ok, _ := p.shouldRotate(200, []byte(`{"success":true,"data":[]}`))
 	if ok {
 		t.Error("clean 200 body: expected no rotate")
 	}
-	ok, _ = shouldRotate(404, []byte(`{"error":"not found"}`))
+	ok, _ = p.shouldRotate(404, []byte(`{"error":"not found"}`))
 	if ok {
 		t.Error("404 not-found body: expected no rotate")
 	}
@@ -84,6 +89,7 @@ func TestShouldRotate_NoMatch(t *testing.T) {
 // rejection. Previously the denylist scanned the whole body and rotated on
 // good responses, causing duplicate requests and credit burn.
 func TestShouldRotate_SuccessBodyWithDenylistWords(t *testing.T) {
+	p := &Profile{Name: "firecrawl"}
 	cases := [][]byte{
 		// success:true envelope, scraped content mentions rejection words
 		[]byte(`{"success":true,"data":[{"markdown":"Firecrawl pricing: payment required for the Growth plan. Rate limit is 500/min."}]}`),
@@ -93,7 +99,7 @@ func TestShouldRotate_SuccessBodyWithDenylistWords(t *testing.T) {
 		[]byte(`<html><body>Unauthorized access is forbidden. 402 payment required.</body></html>`),
 	}
 	for _, body := range cases {
-		ok, _ := shouldRotate(200, body)
+		ok, _ := p.shouldRotate(200, body)
 		if ok {
 			t.Errorf("success body with denylist words must NOT rotate; got true for: %s", body)
 		}
@@ -101,31 +107,32 @@ func TestShouldRotate_SuccessBodyWithDenylistWords(t *testing.T) {
 }
 
 func TestIsCreditExhausted(t *testing.T) {
+	p := &Profile{Name: "firecrawl"}
 	// 402 -> exhausted (disable)
-	if !isCreditExhausted(402, []byte(`{}`)) {
+	if !p.isCreditExhausted(402, []byte(`{}`)) {
 		t.Error("402 should be credit-exhausted")
 	}
 	// 200 + success:false insufficient credits -> exhausted
-	if !isCreditExhausted(200, []byte(`{"success":false,"error":"Insufficient credits"}`)) {
+	if !p.isCreditExhausted(200, []byte(`{"success":false,"error":"Insufficient credits"}`)) {
 		t.Error("insufficient credits body should be exhausted")
 	}
 	// 200 + success:false payment required -> exhausted
-	if !isCreditExhausted(200, []byte(`{"success":false,"error":"Payment required"}`)) {
+	if !p.isCreditExhausted(200, []byte(`{"success":false,"error":"Payment required"}`)) {
 		t.Error("payment required body should be exhausted")
 	}
 	// 429 rate limit -> NOT exhausted (transient)
-	if isCreditExhausted(429, []byte(`{"success":false,"error":"rate limit"}`)) {
+	if p.isCreditExhausted(429, []byte(`{"success":false,"error":"rate limit"}`)) {
 		t.Error("429 rate limit must NOT disable key (transient)")
 	}
 	// 401/403 auth -> NOT exhausted (global/bad key, not credits)
-	if isCreditExhausted(401, []byte(`{}`)) {
+	if p.isCreditExhausted(401, []byte(`{}`)) {
 		t.Error("401 must NOT disable key")
 	}
-	if isCreditExhausted(403, []byte(`{}`)) {
+	if p.isCreditExhausted(403, []byte(`{}`)) {
 		t.Error("403 must NOT disable key")
 	}
 	// success:true mentioning credits -> NOT exhausted (scraped content)
-	if isCreditExhausted(200, []byte(`{"success":true,"data":"payment required credits"}`)) {
+	if p.isCreditExhausted(200, []byte(`{"success":true,"data":"payment required credits"}`)) {
 		t.Error("success body must never be exhausted")
 	}
 }

@@ -22,11 +22,11 @@ const (
 //   - refresh every key once per day as a catch-all.
 // It never blocks the request path: refreshes run in their own goroutine.
 type Refresher struct {
-	pool       *KeyPool
-	client     *http.Client
-	cfg        Config
-	keys       []string
-	log        *logger
+	profile     *Profile
+	client      *http.Client
+	cfg         Config
+	keys        []string
+	log         *logger
 	lowInterval time.Duration // CREDIT_REFRESH_INTERVAL as a Duration
 
 	mu        sync.Mutex
@@ -34,13 +34,13 @@ type Refresher struct {
 	lastDaily []time.Time // last daily refresh-at per key
 }
 
-func NewRefresher(pool *KeyPool, client *http.Client, cfg Config, log *logger) *Refresher {
-	n := len(pool.Snapshot().Keys)
+func NewRefresher(p *Profile, client *http.Client, cfg Config, log *logger) *Refresher {
+	n := len(p.pool.Snapshot().Keys)
 	return &Refresher{
-		pool:        pool,
+		profile:     p,
 		client:      client,
 		cfg:         cfg,
-		keys:        cfg.APIKeys,
+		keys:        p.pool.keys,
 		log:         log,
 		lowInterval: time.Duration(cfg.CreditRefreshSec) * time.Second,
 		lastLow:     make([]time.Time, n),
@@ -72,7 +72,7 @@ func (r *Refresher) MaybeRefreshLow(idx int) {
 		return
 	}
 	// Check predicted balance without holding the refresher lock.
-	predicted := r.pool.Snapshot().Keys[idx].RemainingCredits // -1 = unmeasured
+	predicted := r.profile.pool.Snapshot().Keys[idx].RemainingCredits // -1 = unmeasured
 	if predicted < 0 || predicted >= lowRefreshThreshold {
 		return
 	}
@@ -129,7 +129,7 @@ func (r *Refresher) RefreshAll() int {
 	}
 	wg.Wait()
 	unmeasured := 0
-	for _, k := range r.pool.Snapshot().Keys {
+	for _, k := range r.profile.pool.Snapshot().Keys {
 		if k.RemainingCredits < 0 {
 			unmeasured++
 		}
@@ -143,7 +143,7 @@ func (r *Refresher) refreshOne(idx int) {
 	if idx < 0 || idx >= len(r.keys) {
 		return
 	}
-	got := refreshKey(r.pool, r.client, r.cfg, idx, r.keys[idx], r.log)
+	got := refreshKey(r.profile, r.client, idx, r.keys[idx], r.log)
 	if got >= 0 {
 		r.log.debug("refreshed credits", "key", idx, "remaining", got)
 		r.mu.Lock()

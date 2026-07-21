@@ -7,12 +7,12 @@ import (
 
 func TestRewriteNext_AbsoluteUpstream(t *testing.T) {
 	in := []byte(`{"next":"https://api.firecrawl.dev/v2/crawl/abc/next?cursor=2","data":[]}`)
-	out, changed := rewriteNext(in, "http://firecrawl-rotator:8788", "api.firecrawl.dev")
+	out, changed := rewriteNext(in, "http://api-key-rotator:8788", "api.firecrawl.dev")
 	if !changed {
 		t.Fatal("expected changed=true")
 	}
 	// Note: Go's json.Marshal sorts map keys alphabetically, so "data" comes before "next".
-	want := `{"data":[],"next":"http://firecrawl-rotator:8788/v2/crawl/abc/next?cursor=2"}`
+	want := `{"data":[],"next":"http://api-key-rotator:8788/v2/crawl/abc/next?cursor=2"}`
 	if string(out) != want {
 		t.Fatalf("got %s, want %s", out, want)
 	}
@@ -20,7 +20,7 @@ func TestRewriteNext_AbsoluteUpstream(t *testing.T) {
 
 func TestRewriteNext_RelativeLeftAlone(t *testing.T) {
 	in := []byte(`{"next":"/v2/crawl/abc/next","data":[]}`)
-	out, changed := rewriteNext(in, "http://firecrawl-rotator:8788", "api.firecrawl.dev")
+	out, changed := rewriteNext(in, "http://api-key-rotator:8788", "api.firecrawl.dev")
 	if changed {
 		t.Fatal("expected changed=false for relative next")
 	}
@@ -31,7 +31,7 @@ func TestRewriteNext_RelativeLeftAlone(t *testing.T) {
 
 func TestRewriteNext_ForeignHostLeftAlone(t *testing.T) {
 	in := []byte(`{"next":"https://example.com/foo","data":[]}`)
-	out, changed := rewriteNext(in, "http://firecrawl-rotator:8788", "api.firecrawl.dev")
+	out, changed := rewriteNext(in, "http://api-key-rotator:8788", "api.firecrawl.dev")
 	if changed {
 		t.Fatal("expected changed=false for foreign host")
 	}
@@ -42,7 +42,7 @@ func TestRewriteNext_ForeignHostLeftAlone(t *testing.T) {
 
 func TestRewriteNext_NonURLValueLeftAlone(t *testing.T) {
 	in := []byte(`{"next":null,"data":[]}`)
-	_, changed := rewriteNext(in, "http://firecrawl-rotator:8788", "api.firecrawl.dev")
+	_, changed := rewriteNext(in, "http://api-key-rotator:8788", "api.firecrawl.dev")
 	if changed {
 		t.Fatal("expected changed=false for null next")
 	}
@@ -51,7 +51,7 @@ func TestRewriteNext_NonURLValueLeftAlone(t *testing.T) {
 func TestRewriteNext_HostInContentNotRewritten(t *testing.T) {
 	// "url" field and scraped markdown mentioning the host must NOT change.
 	in := []byte(`{"url":"https://api.firecrawl.dev/page","markdown":"see api.firecrawl.dev for docs"}`)
-	out, changed := rewriteNext(in, "http://firecrawl-rotator:8788", "api.firecrawl.dev")
+	out, changed := rewriteNext(in, "http://api-key-rotator:8788", "api.firecrawl.dev")
 	if changed {
 		t.Fatal("expected changed=false: host in non-next fields must not be rewritten")
 	}

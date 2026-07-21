@@ -176,8 +176,8 @@ func TestKeyPool_ReenableDue(t *testing.T) {
 
 func TestKeyPool_StatsAndMasking(t *testing.T) {
 	p := NewKeyPool([]string{"fc-abcd1234", "fc-wxyz9876"})
-	p.RecordRejection(0, "402")
-	p.RecordRejection(0, "402")
+	p.RecordRejection(0, "exhausted")
+	p.RecordRejection(0, "exhausted")
 	p.RecordRejection(1, "auth")
 	p.RecordSuccess(0)
 
@@ -185,8 +185,8 @@ func TestKeyPool_StatsAndMasking(t *testing.T) {
 	if snap.PoolSize != 2 {
 		t.Fatalf("PoolSize = %d, want 2", snap.PoolSize)
 	}
-	if snap.Keys[0].Stats.Pay402 != 2 {
-		t.Fatalf("key0 Pay402 = %d, want 2", snap.Keys[0].Stats.Pay402)
+	if snap.Keys[0].Stats.Exhausted != 2 {
+		t.Fatalf("key0 Pay402 = %d, want 2", snap.Keys[0].Stats.Exhausted)
 	}
 	if snap.Keys[1].Stats.Auth != 1 {
 		t.Fatalf("key1 Auth = %d, want 1", snap.Keys[1].Stats.Auth)

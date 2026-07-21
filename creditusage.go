@@ -129,27 +129,140 @@ func fetchUsageOnce(c *http.Client, upstream, key string) (usage, string) {
 	return u, ""
 }
 
-// refreshKey fetches a key's live usage and applies it to the pool: sets the
-// remaining credits, and (on a real reset instant) records the reset for the
-// re-enable loop. Returns the fetched remaining credits (-1 if the call failed).
-func refreshKey(pool *KeyPool, client *http.Client, cfg Config, index int, key string, log *logger) int64 {
-	u := fetchUsage(client, cfg.Upstream, key, log)
+// fetchUsageFor dispatches to the profile's provider usage endpoint.
+func fetchUsageFor(p *Profile, client *http.Client, key string, log *logger) usage {
+	if p.Name == "tavily" {
+		return fetchTavilyUsage(client, p.Upstream, key, log)
+	}
+	return fetchUsage(client, p.Upstream, key, log)
+}
+
+// fetchTavilyUsage reads a key's usage from GET {upstream}/usage (read-only,
+// no credit cost). remaining is the min across the key/plan/paygo limit
+// layers; periodEnd is always zero (Tavily exposes no billing period end).
+func fetchTavilyUsage(client *http.Client, upstream, key string, log *logger) usage {
+	const timeout = 5 * time.Second
+	c := client
+	if c == nil {
+		c = &http.Client{Timeout: timeout}
+	} else {
+		c = &http.Client{Transport: c.Transport, Timeout: timeout}
+	}
+
+	var lastReason string
+	for attempt := 0; attempt <= len(usageBackoff); attempt++ {
+		u, reason := fetchTavilyUsageOnce(c, upstream, key)
+		if u.ok {
+			return u
+		}
+		lastReason = reason
+		if !shouldRetryUsage(reason) || attempt >= len(usageBackoff) {
+			break
+		}
+		time.Sleep(usageBackoff[attempt])
+	}
+	if log != nil {
+		log.warn("tavily usage fetch failed", "reason", lastReason, "masked", maskKey(key))
+	}
+	return usage{}
+}
+
+func fetchTavilyUsageOnce(c *http.Client, upstream, key string) (usage, string) {
+	req, err := http.NewRequest(http.MethodGet, upstream+"/usage", nil)
+	if err != nil {
+		return usage{}, "build:" + err.Error()
+	}
+	req.Header.Set("Authorization", "Bearer "+key)
+	req.Header.Set("Accept", "application/json")
+	resp, err := c.Do(req)
+	if err != nil {
+		return usage{}, "net:" + err.Error()
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return usage{}, "status:" + strconv.Itoa(resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	if err != nil {
+		return usage{}, "read:" + err.Error()
+	}
+	var env struct {
+		Key struct {
+			Usage int64 `json:"usage"`
+			Limit int64 `json:"limit"`
+		} `json:"key"`
+		Account struct {
+			PlanUsage  int64 `json:"plan_usage"`
+			PlanLimit  int64 `json:"plan_limit"`
+			PaygoUsage int64 `json:"paygo_usage"`
+			PaygoLimit int64 `json:"paygo_limit"`
+		} `json:"account"`
+	}
+	if err := json.Unmarshal(body, &env); err != nil {
+		return usage{}, "parse:" + err.Error()
+	}
+	rem, ok := tavilyRemaining(env.Key.Usage, env.Key.Limit,
+		env.Account.PlanUsage, env.Account.PlanLimit,
+		env.Account.PaygoUsage, env.Account.PaygoLimit)
+	if !ok {
+		return usage{}, "parse:no limit layers"
+	}
+	return usage{remaining: rem, ok: true}, ""
+}
+
+// tavilyRemaining computes the effective remaining credits as the minimum over
+// the limit layers present. A layer with limit <= 0 is unlimited/unmeasured
+// and skipped. ok is false when every layer is unlimited (caller treats the
+// key as unmeasured).
+func tavilyRemaining(keyUsage, keyLimit, planUsage, planLimit, paygoUsage, paygoLimit int64) (int64, bool) {
+	layers := [][2]int64{
+		{keyUsage, keyLimit},
+		{planUsage, planLimit},
+		{paygoUsage, paygoLimit},
+	}
+	best := int64(-1)
+	for _, l := range layers {
+		used, limit := l[0], l[1]
+		if limit <= 0 {
+			continue // unlimited / unmeasured layer
+		}
+		rem := limit - used
+		if rem < 0 {
+			rem = 0
+		}
+		if best < 0 || rem < best {
+			best = rem
+		}
+	}
+	if best < 0 {
+		return 0, false
+	}
+	return best, true
+}
+
+// refreshKey fetches a key's live usage (via the profile's provider) and
+// applies it to the profile's pool. Returns the fetched remaining credits
+// (-1 if the call failed).
+func refreshKey(p *Profile, client *http.Client, index int, key string, log *logger) int64 {
+	u := fetchUsageFor(p, client, key, log)
 	if !u.ok {
 		return -1
 	}
-	pool.SetCredits(index, u.remaining)
+	p.pool.SetCredits(index, u.remaining)
 	return u.remaining
 }
 
-// disableUntilReset disables key index in the pool, first trying to read the
-// key's real billing-period end (so accounts on different anniversaries reset
-// independently) and falling back to the configured reset day-of-month.
-func disableUntilReset(pool *KeyPool, client *http.Client, cfg Config, index int, key string, now time.Time, log *logger) {
-	fallback := fallbackReset(now, cfg.CreditResetDay)
-	u := fetchUsage(client, cfg.Upstream, key, log)
+// disableUntilReset disables key index in the profile's pool. Firecrawl keys
+// reset at their real billing-period end when available; Tavily exposes no
+// period end, so it always uses the CREDIT_RESET_DAY fallback.
+func disableUntilReset(p *Profile, client *http.Client, index int, key string, now time.Time, log *logger) {
+	fallback := fallbackReset(now, p.CreditResetDay)
 	reset := fallback
-	if u.ok && !u.periodEnd.IsZero() && !u.periodEnd.Before(now) && !u.periodEnd.After(now.AddDate(1, 0, 0)) {
-		reset = u.periodEnd
+	if p.Name != "tavily" {
+		u := fetchUsageFor(p, client, key, log)
+		if u.ok && !u.periodEnd.IsZero() && !u.periodEnd.Before(now) && !u.periodEnd.After(now.AddDate(1, 0, 0)) {
+			reset = u.periodEnd
+		}
 	}
-	pool.Disable(index, reset)
+	p.pool.Disable(index, reset)
 }

@@ -20,7 +20,13 @@ func TestRefresher_LowIntervalFromConfig(t *testing.T) {
 		Upstream:         "http://unused",
 		CreditRefreshSec: 300, // 5 minutes
 	}
-	r := NewRefresher(pool, &http.Client{}, cfg, newLogger("info"))
+	p := &Profile{
+		Name:         "firecrawl",
+		Upstream:     cfg.Upstream,
+		UpstreamHost: cfg.UpstreamHost,
+		pool:         pool,
+	}
+	r := NewRefresher(p, &http.Client{}, cfg, newLogger("info"))
 	if r.lowInterval != 300*time.Second {
 		t.Fatalf("lowInterval = %v, want 300s (CREDIT_REFRESH_INTERVAL must be honored)", r.lowInterval)
 	}
@@ -53,7 +59,13 @@ func TestRefresher_RefreshAllFetchesUsage(t *testing.T) {
 	pool := NewKeyPool([]string{"fc-a", "fc-b"})
 	pool.SetThresholds(10, 2)
 	cfg := Config{APIKeys: []string{"fc-a", "fc-b"}, Upstream: fake.URL, UpstreamHost: httptestURLHost(fake.URL), CreditRefreshSec: 60}
-	r := NewRefresher(pool, &http.Client{}, cfg, newLogger("info"))
+	p := &Profile{
+		Name:         "firecrawl",
+		Upstream:     cfg.Upstream,
+		UpstreamHost: cfg.UpstreamHost,
+		pool:         pool,
+	}
+	r := NewRefresher(p, &http.Client{}, cfg, newLogger("info"))
 	r.RefreshAll()
 
 	if hits != 2 {

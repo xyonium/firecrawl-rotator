@@ -13,8 +13,7 @@ func buildServer() (*http.Server, error) {
 		return nil, err
 	}
 
-	pool := NewKeyPool(cfg.APIKeys)
-	pool.SetThresholds(cfg.LowCreditThreshold, cfg.StopCreditThreshold)
+	profiles := buildProfiles(cfg)
 	tr, err := buildTransport(cfg)
 	if err != nil {
 		return nil, err
@@ -24,29 +23,30 @@ func buildServer() (*http.Server, error) {
 		Timeout:   30 * time.Second,
 	}
 	log := newLogger(cfg.LogLevel)
-	refresh := NewRefresher(pool, client, cfg, log)
+
+	for _, p := range profiles {
+		p.refresh = NewRefresher(p, client, cfg, log)
+	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", healthzHandler(pool))
-	mux.HandleFunc("/status", statusHandler(pool))
+	mux.HandleFunc("/healthz", healthzHandler(profiles))
+	mux.HandleFunc("/status", statusHandler(profiles))
 	// Everything else goes to the rotator.
-	mux.Handle("/", newRotator(cfg, pool, client, log, refresh))
+	mux.Handle("/", newRotator(cfg, profiles, client, log))
 
-	// Warm up: fetch each key's real remainingCredits so selection starts
-	// accurate. Runs in the background so the server starts immediately; until
-	// it completes, unmeasured keys are treated as "plenty" (math.MaxInt64).
-	// If the warm-up leaves any key unmeasured (transient network blip at
-	// startup), retry every minute until it succeeds - don't strand keys at
-	// "unmeasured" waiting up to 24h for the daily refresh.
-	go warmupLoop(refresh, log)
+	// Per-profile background loops: warm-up (self-healing), reset re-enable,
+	// daily catch-all refresh.
+	for _, p := range profiles {
+		go warmupLoop(p.refresh, log)
+		go resetLoop(p.pool, log)
+		go dailyRefreshLoop(p.refresh, log)
+	}
 
-	// Background loop: re-enable keys whose per-key billing reset has passed.
-	go resetLoop(pool, log)
-	// Background loop: daily catch-all refresh of every key's credits.
-	go dailyRefreshLoop(refresh, log)
-
-	log.info("firecrawl-rotator starting",
+	log.info("api-key-rotator starting",
+		"profiles", len(profiles),
 		"keys", len(cfg.APIKeys), "upstream", cfg.Upstream, "maxPasses", cfg.MaxPasses,
+		"tavilyKeys", len(cfg.Tavily.APIKeys), "tavilyUpstream", cfg.Tavily.Upstream,
+		"tavilyPrefix", cfg.Tavily.RoutePrefix,
 		"creditResetDay", cfg.CreditResetDay,
 		"lowCreditThreshold", cfg.LowCreditThreshold,
 		"stopCreditThreshold", cfg.StopCreditThreshold,

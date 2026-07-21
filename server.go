@@ -42,9 +42,16 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-func healthzHandler(pool *KeyPool) http.HandlerFunc {
+func healthzHandler(profiles []*Profile) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
-		if pool == nil || len(pool.keys) == 0 || !pool.AnyUsable() {
+		usable := false
+		for _, p := range profiles {
+			if p.pool != nil && len(p.pool.keys) > 0 && p.pool.AnyUsable() {
+				usable = true
+				break
+			}
+		}
+		if !usable {
 			writeJSON(w, 503, map[string]any{"ok": false})
 			return
 		}
@@ -52,8 +59,12 @@ func healthzHandler(pool *KeyPool) http.HandlerFunc {
 	}
 }
 
-func statusHandler(pool *KeyPool) http.HandlerFunc {
+func statusHandler(profiles []*Profile) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
-		writeJSON(w, 200, pool.Snapshot())
+		snaps := make(map[string]PoolSnapshot, len(profiles))
+		for _, p := range profiles {
+			snaps[p.Name] = p.pool.Snapshot()
+		}
+		writeJSON(w, 200, map[string]any{"profiles": snaps})
 	}
 }
