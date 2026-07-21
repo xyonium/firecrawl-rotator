@@ -188,14 +188,14 @@ func fetchTavilyUsageOnce(c *http.Client, upstream, key string) (usage, string) 
 	}
 	var env struct {
 		Key struct {
-			Usage int64 `json:"usage"`
-			Limit int64 `json:"limit"`
+			Usage *int64 `json:"usage"`
+			Limit *int64 `json:"limit"`
 		} `json:"key"`
 		Account struct {
-			PlanUsage  int64 `json:"plan_usage"`
-			PlanLimit  int64 `json:"plan_limit"`
-			PaygoUsage int64 `json:"paygo_usage"`
-			PaygoLimit int64 `json:"paygo_limit"`
+			PlanUsage  *int64 `json:"plan_usage"`
+			PlanLimit  *int64 `json:"plan_limit"`
+			PaygoUsage *int64 `json:"paygo_usage"`
+			PaygoLimit *int64 `json:"paygo_limit"`
 		} `json:"account"`
 	}
 	if err := json.Unmarshal(body, &env); err != nil {
@@ -211,11 +211,12 @@ func fetchTavilyUsageOnce(c *http.Client, upstream, key string) (usage, string) 
 }
 
 // tavilyRemaining computes the effective remaining credits as the minimum over
-// the limit layers present. A layer with limit <= 0 is unlimited/unmeasured
-// and skipped. ok is false when every layer is unlimited (caller treats the
-// key as unmeasured).
-func tavilyRemaining(keyUsage, keyLimit, planUsage, planLimit, paygoUsage, paygoLimit int64) (int64, bool) {
-	layers := [][2]int64{
+// the limit layers present. A nil usage or limit (JSON null/absent) means the
+// layer is unmeasured and is skipped. An explicit limit of 0 means the layer
+// genuinely has no credits (remaining 0), NOT unlimited. ok is false when
+// every layer is unmeasured (caller treats the key as unmeasured).
+func tavilyRemaining(keyUsage, keyLimit, planUsage, planLimit, paygoUsage, paygoLimit *int64) (int64, bool) {
+	layers := [][2]*int64{
 		{keyUsage, keyLimit},
 		{planUsage, planLimit},
 		{paygoUsage, paygoLimit},
@@ -223,10 +224,10 @@ func tavilyRemaining(keyUsage, keyLimit, planUsage, planLimit, paygoUsage, paygo
 	best := int64(-1)
 	for _, l := range layers {
 		used, limit := l[0], l[1]
-		if limit <= 0 {
-			continue // unlimited / unmeasured layer
+		if used == nil || limit == nil {
+			continue // unmeasured layer
 		}
-		rem := limit - used
+		rem := *limit - *used
 		if rem < 0 {
 			rem = 0
 		}

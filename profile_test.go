@@ -117,17 +117,19 @@ func TestProfile_isCreditExhausted(t *testing.T) {
 func TestTavilyRemaining(t *testing.T) {
 	cases := []struct {
 		name                                    string
-		keyU, keyL, planU, planL, payU, payL int64
+		keyU, keyL, planU, planL, payU, payL *int64
 		want                                    int64
 		wantOK                                  bool
 	}{
-		{"all layers", 150, 1000, 500, 15000, 25, 100, 75, true},       // min(850, 14500, 75)
-		{"key layer smallest", 990, 1000, 0, 15000, 0, 100, 10, true},  // min(10, 15000, 100)
-		{"plan layer smallest", 0, 1000, 14990, 15000, 0, 100, 10, true},
-		{"no key limit (0 = unlimited)", 100, 0, 500, 15000, 25, 100, 75, true},
-		{"no paygo limit", 100, 1000, 500, 15000, 0, 0, 900, true},
-		{"all unlimited", 100, 0, 500, 0, 25, 0, 0, false},
-		{"exhausted key", 1000, 1000, 500, 15000, 25, 100, 0, true},
+		{"all layers", ptr(150), ptr(1000), ptr(500), ptr(15000), ptr(25), ptr(100), 75, true},      // min(850, 14500, 75)
+		{"key layer smallest", ptr(990), ptr(1000), ptr(0), ptr(15000), ptr(0), ptr(100), 10, true}, // min(10, 15000, 100)
+		{"plan layer smallest", ptr(0), ptr(1000), ptr(14990), ptr(15000), ptr(0), ptr(100), 10, true},
+		{"no key limit (null)", ptr(100), nil, ptr(500), ptr(15000), ptr(25), ptr(100), 75, true},
+		{"no paygo limit (null)", ptr(100), ptr(1000), ptr(500), ptr(15000), ptr(0), nil, 900, true},
+		{"key null + paygo null (researcher plan shape)", ptr(2), nil, ptr(2), ptr(1000), ptr(0), nil, 998, true},
+		{"all unlimited (null)", ptr(100), nil, ptr(500), nil, ptr(25), nil, 0, false},
+		{"exhausted key", ptr(1000), ptr(1000), ptr(500), ptr(15000), ptr(25), ptr(100), 0, true},
+		{"explicit zero limit = no credits", ptr(0), ptr(0), ptr(500), ptr(15000), ptr(0), ptr(100), 0, true},
 	}
 	for _, c := range cases {
 		got, ok := tavilyRemaining(c.keyU, c.keyL, c.planU, c.planL, c.payU, c.payL)
@@ -136,6 +138,8 @@ func TestTavilyRemaining(t *testing.T) {
 		}
 	}
 }
+
+func ptr(v int64) *int64 { return &v }
 
 func TestFetchTavilyUsage(t *testing.T) {
 	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
