@@ -10,11 +10,19 @@ import (
 	"time"
 )
 
-// testRotator builds a rotator with credit thresholds set and a nil refresher
-// (refresh is opt-in; tests that need it pass one explicitly).
+// testRotator builds a rotator with a single firecrawl profile from cfg, with
+// credit thresholds set and a nil refresher.
 func testRotator(cfg Config, pool *KeyPool, client *http.Client) *rotator {
 	pool.SetThresholds(cfg.LowCreditThreshold, cfg.StopCreditThreshold)
-	return newRotator(cfg, pool, client, newLogger("info"), nil)
+	p := &Profile{
+		Name:           "firecrawl",
+		Upstream:       cfg.Upstream,
+		UpstreamHost:   cfg.UpstreamHost,
+		CreditResetDay: cfg.CreditResetDay,
+		RewriteNext:    true,
+		pool:           pool,
+	}
+	return newRotator(cfg, []*Profile{p}, client, newLogger("info"))
 }
 
 // fakeBackend returns 402 for key "fc-bad" and 200 for "fc-good".

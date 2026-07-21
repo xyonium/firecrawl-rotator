@@ -1,0 +1,178 @@
+package main
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"testing"
+)
+
+func profilesForTest() []*Profile {
+	fc := &Profile{Name: "firecrawl", RoutePrefix: "", pool: NewKeyPool([]string{"fc-a"})}
+	tv := &Profile{Name: "tavily", RoutePrefix: "/tavily", pool: NewKeyPool([]string{"tvly-a"})}
+	return []*Profile{fc, tv}
+}
+
+func TestMatchProfile(t *testing.T) {
+	profiles := profilesForTest()
+	cases := []struct {
+		path         string
+		wantName     string
+		wantStripped string
+		wantOK       bool
+	}{
+		{"/v2/scrape", "firecrawl", "/v2/scrape", true},
+		{"/tavily/search", "tavily", "/search", true},
+		{"/tavily/extract", "tavily", "/extract", true},
+		{"/tavily", "tavily", "/", true},
+		{"/tavilyfoo/search", "firecrawl", "/tavilyfoo/search", true}, // no segment boundary -> default
+		{"/", "firecrawl", "/", true},
+	}
+	for _, c := range cases {
+		p, stripped, ok := matchProfile(profiles, c.path)
+		if !ok || p.Name != c.wantName || stripped != c.wantStripped {
+			t.Errorf("matchProfile(%q) = (%v, %q, %v), want (%s, %q, true)",
+				c.path, p, stripped, ok, c.wantName, c.wantStripped)
+		}
+	}
+}
+
+func TestMatchProfile_unconfiguredPrefixFallsToDefault(t *testing.T) {
+	// Only the firecrawl profile configured: /tavily/... falls through to the
+	// default profile (byte-compat: single-profile deployments change nothing).
+	profiles := []*Profile{{Name: "firecrawl", RoutePrefix: "", pool: NewKeyPool([]string{"fc-a"})}}
+	p, stripped, ok := matchProfile(profiles, "/tavily/search")
+	if !ok || p.Name != "firecrawl" || stripped != "/tavily/search" {
+		t.Fatalf("matchProfile = (%v, %q, %v), want firecrawl default fallthrough", p, stripped, ok)
+	}
+}
+
+func TestProfile_shouldRotate_firecrawl(t *testing.T) {
+	p := &Profile{Name: "firecrawl"}
+	for _, st := range []int{401, 402, 429} {
+		if rotate, _ := p.shouldRotate(st, nil); !rotate {
+			t.Errorf("firecrawl shouldRotate(%d) = false, want true", st)
+		}
+	}
+	if rotate, _ := p.shouldRotate(403, nil); rotate {
+		t.Error("firecrawl shouldRotate(403) = true, want false (transient)")
+	}
+	// Failure envelope with denylist phrase still rotates on 200.
+	body := []byte(`{"success":false,"error":"rate limit exceeded"}`)
+	if rotate, _ := p.shouldRotate(200, body); !rotate {
+		t.Error("firecrawl shouldRotate(200, failure envelope) = false, want true")
+	}
+	// success:true NEVER rotates, even with denylist words in content.
+	ok := []byte(`{"success":true,"data":[{"markdown":"payment required here"}]}`)
+	if rotate, _ := p.shouldRotate(200, ok); rotate {
+		t.Error("firecrawl shouldRotate(200, success:true) = true, want false")
+	}
+}
+
+func TestProfile_shouldRotate_tavily(t *testing.T) {
+	p := &Profile{Name: "tavily"}
+	for _, st := range []int{401, 429, 432, 433} {
+		if rotate, _ := p.shouldRotate(st, nil); !rotate {
+			t.Errorf("tavily shouldRotate(%d) = false, want true", st)
+		}
+	}
+	for _, st := range []int{200, 400, 403, 402} {
+		if rotate, _ := p.shouldRotate(st, nil); rotate {
+			t.Errorf("tavily shouldRotate(%d) = true, want false", st)
+		}
+	}
+	// Body text never triggers rotation for tavily (status codes suffice).
+	body := []byte(`{"detail":{"error":"payment required"}}`)
+	if rotate, _ := p.shouldRotate(200, body); rotate {
+		t.Error("tavily shouldRotate(200, denylist-ish body) = true, want false")
+	}
+}
+
+func TestProfile_isCreditExhausted(t *testing.T) {
+	fc := &Profile{Name: "firecrawl"}
+	if !fc.isCreditExhausted(402, nil) {
+		t.Error("firecrawl isCreditExhausted(402) = false, want true")
+	}
+	if !fc.isCreditExhausted(200, []byte(`{"success":false,"error":"insufficient credits"}`)) {
+		t.Error("firecrawl isCreditExhausted(credits envelope) = false, want true")
+	}
+	if fc.isCreditExhausted(429, nil) {
+		t.Error("firecrawl isCreditExhausted(429) = true, want false")
+	}
+
+	tv := &Profile{Name: "tavily"}
+	if !tv.isCreditExhausted(432, nil) || !tv.isCreditExhausted(433, nil) {
+		t.Error("tavily isCreditExhausted(432/433) = false, want true")
+	}
+	for _, st := range []int{401, 402, 429} {
+		if tv.isCreditExhausted(st, nil) {
+			t.Errorf("tavily isCreditExhausted(%d) = true, want false", st)
+		}
+	}
+	// Tavily never disables on body text.
+	if tv.isCreditExhausted(200, []byte(`{"detail":{"error":"insufficient credits"}}`)) {
+		t.Error("tavily isCreditExhausted(200 body) = true, want false")
+	}
+}
+
+func TestTavilyRemaining(t *testing.T) {
+	cases := []struct {
+		name                                    string
+		keyU, keyL, planU, planL, payU, payL int64
+		want                                    int64
+		wantOK                                  bool
+	}{
+		{"all layers", 150, 1000, 500, 15000, 25, 100, 75, true},       // min(850, 14500, 75)
+		{"key layer smallest", 990, 1000, 0, 15000, 0, 100, 10, true},  // min(10, 15000, 100)
+		{"plan layer smallest", 0, 1000, 14990, 15000, 0, 100, 10, true},
+		{"no key limit (0 = unlimited)", 100, 0, 500, 15000, 25, 100, 75, true},
+		{"no paygo limit", 100, 1000, 500, 15000, 0, 0, 900, true},
+		{"all unlimited", 100, 0, 500, 0, 25, 0, 0, false},
+		{"exhausted key", 1000, 1000, 500, 15000, 25, 100, 0, true},
+	}
+	for _, c := range cases {
+		got, ok := tavilyRemaining(c.keyU, c.keyL, c.planU, c.planL, c.payU, c.payL)
+		if got != c.want || ok != c.wantOK {
+			t.Errorf("%s: tavilyRemaining = (%d, %v), want (%d, %v)", c.name, got, ok, c.want, c.wantOK)
+		}
+	}
+}
+
+func TestFetchTavilyUsage(t *testing.T) {
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/usage" {
+			w.WriteHeader(404)
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer tvly-a" {
+			w.WriteHeader(401)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"key": {"usage": 150, "limit": 1000},
+			"account": {"plan_usage": 500, "plan_limit": 15000, "paygo_usage": 25, "paygo_limit": 100}
+		}`))
+	}))
+	defer fake.Close()
+
+	u := fetchTavilyUsage(fake.Client(), fake.URL, "tvly-a", nil)
+	if !u.ok {
+		t.Fatal("fetchTavilyUsage failed")
+	}
+	if u.remaining != 75 {
+		t.Fatalf("remaining = %d, want 75 (min of 850/14500/75)", u.remaining)
+	}
+	if !u.periodEnd.IsZero() {
+		t.Fatalf("periodEnd = %v, want zero (tavily returns no period end)", u.periodEnd)
+	}
+}
+
+func TestFetchTavilyUsage_unauthorized(t *testing.T) {
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(401)
+	}))
+	defer fake.Close()
+	if u := fetchTavilyUsage(fake.Client(), fake.URL, "bad", nil); u.ok {
+		t.Fatal("expected failure for 401")
+	}
+}

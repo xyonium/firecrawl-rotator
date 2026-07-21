@@ -12,14 +12,13 @@ import (
 
 type rotator struct {
 	cfg      Config
-	pool     *KeyPool
+	profiles []*Profile
 	client   *http.Client
 	log      *logger
-	refresh  *Refresher
 }
 
-func newRotator(cfg Config, pool *KeyPool, client *http.Client, log *logger, refresh *Refresher) *rotator {
-	return &rotator{cfg: cfg, pool: pool, client: client, log: log, refresh: refresh}
+func newRotator(cfg Config, profiles []*Profile, client *http.Client, log *logger) *rotator {
+	return &rotator{cfg: cfg, profiles: profiles, client: client, log: log}
 }
 
 // backoff schedule for transient retries (network/403/5xx) on the SAME key:
@@ -33,6 +32,12 @@ var backoffSchedule = []time.Duration{
 }
 
 func (r *rotator) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	p, strippedPath, ok := matchProfile(r.profiles, req.URL.Path)
+	if !ok {
+		http.Error(w, `{"success":false,"error":"no profile configured for this path"}`, http.StatusNotFound)
+		return
+	}
+
 	// Buffer the incoming body once so retries can replay it.
 	inBody, err := io.ReadAll(req.Body)
 	if err != nil {
@@ -41,7 +46,7 @@ func (r *rotator) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 	_ = req.Body.Close()
 
-	maxRotations := r.cfg.MaxPasses * len(r.pool.keys)
+	maxRotations := r.cfg.MaxPasses * len(p.pool.keys)
 	var lastStatus int
 	var lastHeader http.Header
 	var lastBody []byte
@@ -49,19 +54,19 @@ func (r *rotator) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	var cleanBreak bool
 
 	for rotation := 0; rotation < maxRotations; rotation++ {
-		idx, key := r.pool.Current()
+		idx, key := p.pool.Current()
 		if idx < 0 {
 			// No key meets the stop-threshold (all credit-exhausted). Stop.
-			r.log.warn("no usable keys (all below stop credit threshold)")
+			r.log.warn("no usable keys (all below stop credit threshold)", "profile", p.Name)
 			break
 		}
 
 		// Try this key, with exponential backoff on transient errors.
-		status, header, body, capped, netErr := r.tryKey(req, idx, key, inBody)
+		status, header, body, capped, netErr := r.tryKey(req, p, idx, key, inBody, strippedPath)
 
 		if capped {
 			lastStatus, lastHeader, lastBody, overCap = status, header, body, true
-			r.log.warn("response body over MAX_BODY_BYTES, forwarding untouched", "key", idx)
+			r.log.warn("response body over MAX_BODY_BYTES, forwarding untouched", "profile", p.Name, "key", idx)
 			cleanBreak = true
 			break
 		}
@@ -70,47 +75,47 @@ func (r *rotator) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		// next key and try again (a different key may route differently).
 		if netErr {
 			lastStatus, lastHeader, lastBody = status, header, body
-			r.log.warn("transient errors exhausted on key, rotating", "key", idx)
+			r.log.warn("transient errors exhausted on key, rotating", "profile", p.Name, "key", idx)
 			prev := idx
-			r.pool.Advance()
-			if next, _ := r.pool.Current(); next >= 0 && r.refresh != nil {
-				r.refresh.OnSwitch(prev, next)
+			p.pool.Advance()
+			if next, _ := p.pool.Current(); next >= 0 && p.refresh != nil {
+				p.refresh.OnSwitch(prev, next)
 			}
 			continue
 		}
 
 		lastStatus, lastHeader, lastBody = status, header, body
 
-		rotate, reason := shouldRotate(status, body)
+		rotate, reason := p.shouldRotate(status, body)
 		if !rotate {
 			// Success: record it, decrement predicted credits, maybe refresh.
-			r.pool.RecordSuccess(idx)
-			r.pool.Decrement(idx, extractCreditsUsed(body))
-			if r.refresh != nil {
-				r.refresh.MaybeRefreshLow(idx)
+			p.pool.RecordSuccess(idx)
+			p.pool.Decrement(idx, extractCreditsUsed(body))
+			if p.refresh != nil {
+				p.refresh.MaybeRefreshLow(idx)
 			}
 			cleanBreak = true
 			break
 		}
 
 		kind := rejectKind(status)
-		r.pool.RecordRejection(idx, kind)
-		r.log.info("rotating key", "from", idx, "reason", reason, "masked", maskKey(key))
+		p.pool.RecordRejection(idx, kind)
+		r.log.info("rotating key", "profile", p.Name, "from", idx, "reason", reason, "masked", maskKey(key))
 		// Genuine credit exhaustion disables the key until its billing reset.
-		if isCreditExhausted(status, body) {
-			disableUntilReset(r.pool, r.client, r.cfg, idx, key, time.Now().UTC(), r.log)
-			r.log.warn("key credit-disabled until reset", "key", idx, "masked", maskKey(key))
+		if p.isCreditExhausted(status, body) {
+			disableUntilReset(p, r.client, idx, key, time.Now().UTC(), r.log)
+			r.log.warn("key credit-disabled until reset", "profile", p.Name, "key", idx, "masked", maskKey(key))
 		}
 		prev := idx
-		r.pool.Advance()
-		if next, _ := r.pool.Current(); next >= 0 && next != prev && r.refresh != nil {
-			r.refresh.OnSwitch(prev, next)
+		p.pool.Advance()
+		if next, _ := p.pool.Current(); next >= 0 && next != prev && p.refresh != nil {
+			p.refresh.OnSwitch(prev, next)
 		}
 		// loop continues with next key
 	}
 
 	if !cleanBreak {
-		r.log.warn("all keys exhausted", "lastStatus", lastStatus, "keys", len(r.pool.keys), "maxPasses", r.cfg.MaxPasses)
+		r.log.warn("all keys exhausted", "profile", p.Name, "lastStatus", lastStatus, "keys", len(p.pool.keys), "maxPasses", r.cfg.MaxPasses)
 	}
 
 	if overCap {
@@ -119,8 +124,8 @@ func (r *rotator) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// If every key is credit-exhausted, return 503 with a clear message.
-	if idx, _ := r.pool.Current(); idx < 0 {
-		http.Error(w, `{"success":false,"error":"all keys credit-exhausted until billing reset"}`, http.StatusServiceUnavailable)
+	if idx, _ := p.pool.Current(); idx < 0 {
+		http.Error(w, `{"success":false,"error":"all keys credit-exhausted until billing reset","profile":"`+p.Name+`"}`, http.StatusServiceUnavailable)
 		return
 	}
 
@@ -131,15 +136,15 @@ func (r *rotator) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// Rewrite next URLs + pagination guard on the final body.
+	// Rewrite next URLs + pagination guard on the final body (firecrawl only).
 	finalBody := lastBody
-	if isJSON(lastHeader) {
+	if p.RewriteNext && isJSON(lastHeader) {
 		proxyBase := r.cfg.ProxyBaseURL
 		if proxyBase == "" {
 			proxyBase = "http://" + req.Host
 		}
 		proxyBase = formatProxyBase(proxyBase)
-		if rb, changed := rewriteNext(lastBody, proxyBase, r.cfg.UpstreamHost); changed {
+		if rb, changed := rewriteNext(lastBody, proxyBase, p.UpstreamHost); changed {
 			finalBody = rb
 		}
 		if paginationGuard(lastBody) {
@@ -154,9 +159,13 @@ func (r *rotator) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 // (network/403/5xx) with exponential backoff on the SAME key. Returns the final
 // status/header/body, whether the body was over the cap, and netErr=true if the
 // key gave up after exhausting backoff retries (caller rotates).
-func (r *rotator) tryKey(req *http.Request, idx int, key string, inBody []byte) (status int, header http.Header, body []byte, capped bool, netErr bool) {
+func (r *rotator) tryKey(req *http.Request, p *Profile, idx int, key string, inBody []byte, strippedPath string) (status int, header http.Header, body []byte, capped bool, netErr bool) {
 	for attempt := 0; attempt < len(backoffSchedule)+1; attempt++ {
-		upReq, err := http.NewRequestWithContext(req.Context(), req.Method, r.cfg.Upstream+req.RequestURI, bytes.NewReader(inBody))
+		upstreamURL := p.Upstream + strippedPath
+		if req.URL.RawQuery != "" {
+			upstreamURL += "?" + req.URL.RawQuery
+		}
+		upReq, err := http.NewRequestWithContext(req.Context(), req.Method, upstreamURL, bytes.NewReader(inBody))
 		if err != nil {
 			return 0, nil, nil, false, true
 		}
@@ -164,7 +173,7 @@ func (r *rotator) tryKey(req *http.Request, idx int, key string, inBody []byte) 
 		upReq.Header.Del("Authorization")
 		upReq.Header.Del("Host")
 		upReq.Header.Set("Authorization", "Bearer "+key)
-		upReq.Host = r.cfg.UpstreamHost
+		upReq.Host = p.UpstreamHost
 		for k := range upReq.Header {
 			if isHopByHop(k) {
 				upReq.Header.Del(k)
@@ -178,7 +187,7 @@ func (r *rotator) tryKey(req *http.Request, idx int, key string, inBody []byte) 
 				return 0, nil, nil, false, true // client canceled
 			}
 			if attempt >= len(backoffSchedule) {
-				r.log.warn("upstream request error, giving up on key", "key", idx, "err", err)
+				r.log.warn("upstream request error, giving up on key", "profile", p.Name, "key", idx, "err", err)
 				return 0, nil, nil, false, true
 			}
 			continue
@@ -194,14 +203,14 @@ func (r *rotator) tryKey(req *http.Request, idx int, key string, inBody []byte) 
 		if shouldRetry(resp.StatusCode, false) {
 			// transient status (403/5xx): backoff and retry SAME key
 			if attempt < len(backoffSchedule) {
-				r.log.warn("transient upstream status, backing off", "key", idx, "status", resp.StatusCode, "attempt", attempt+1)
+				r.log.warn("transient upstream status, backing off", "profile", p.Name, "key", idx, "status", resp.StatusCode, "attempt", attempt+1)
 				if r.sleepOrCancel(req, backoffSchedule[attempt]) {
 					return resp.StatusCode, resp.Header, b, false, true
 				}
 				continue
 			}
 			// backoff exhausted on this key: signal rotate
-			r.log.warn("transient status persisted, rotating", "key", idx, "status", resp.StatusCode)
+			r.log.warn("transient status persisted, rotating", "profile", p.Name, "key", idx, "status", resp.StatusCode)
 			return resp.StatusCode, resp.Header, b, false, true
 		}
 
@@ -241,10 +250,10 @@ func extractCreditsUsed(body []byte) int64 {
 
 func rejectKind(status int) string {
 	switch status {
-	case 402:
-		return "402"
+	case 402, 432, 433:
+		return "exhausted"
 	case 429:
-		return "429"
+		return "rate"
 	case 401:
 		return "auth"
 	default:

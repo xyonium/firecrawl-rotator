@@ -7,11 +7,11 @@ import (
 )
 
 type keyStat struct {
-	Success int `json:"success"`
-	Pay402  int `json:"402"`
-	Rate429 int `json:"429"`
-	Auth    int `json:"auth"`
-	Retries int `json:"retries"`
+	Success     int `json:"success"`
+	Exhausted   int `json:"exhausted"`
+	RateLimited int `json:"rateLimited"`
+	Auth        int `json:"auth"`
+	Retries     int `json:"retries"`
 }
 
 type keySnapshot struct {
@@ -156,10 +156,10 @@ func (p *KeyPool) RecordRejection(index int, kind string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	switch kind {
-	case "402":
-		p.stats[index].Pay402++
-	case "429":
-		p.stats[index].Rate429++
+	case "exhausted":
+		p.stats[index].Exhausted++
+	case "rate":
+		p.stats[index].RateLimited++
 	case "auth":
 		p.stats[index].Auth++
 	case "retry":

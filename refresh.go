@@ -143,7 +143,14 @@ func (r *Refresher) refreshOne(idx int) {
 	if idx < 0 || idx >= len(r.keys) {
 		return
 	}
-	got := refreshKey(r.pool, r.client, r.cfg, idx, r.keys[idx], r.log)
+	p := &Profile{
+		Name:           "firecrawl",
+		Upstream:       r.cfg.Upstream,
+		UpstreamHost:   r.cfg.UpstreamHost,
+		CreditResetDay: r.cfg.CreditResetDay,
+		pool:           r.pool,
+	}
+	got := refreshKey(p, r.client, idx, r.keys[idx], r.log)
 	if got >= 0 {
 		r.log.debug("refreshed credits", "key", idx, "remaining", got)
 		r.mu.Lock()

@@ -30,7 +30,16 @@ func buildServer() (*http.Server, error) {
 	mux.HandleFunc("/healthz", healthzHandler(pool))
 	mux.HandleFunc("/status", statusHandler(pool))
 	// Everything else goes to the rotator.
-	mux.Handle("/", newRotator(cfg, pool, client, log, refresh))
+	fcProfile := &Profile{
+		Name:           "firecrawl",
+		Upstream:       cfg.Upstream,
+		UpstreamHost:   cfg.UpstreamHost,
+		CreditResetDay: cfg.CreditResetDay,
+		RewriteNext:    true,
+		pool:           pool,
+		refresh:        refresh,
+	}
+	mux.Handle("/", newRotator(cfg, []*Profile{fcProfile}, client, log))
 
 	// Warm up: fetch each key's real remainingCredits so selection starts
 	// accurate. Runs in the background so the server starts immediately; until

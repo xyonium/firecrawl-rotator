@@ -28,7 +28,7 @@ func TestHealthz_UnhealthyEmptyPool(t *testing.T) {
 
 func TestStatus_ShapeAndMasking(t *testing.T) {
 	pool := NewKeyPool([]string{"fc-abcdef1234"})
-	pool.RecordRejection(0, "402")
+	pool.RecordRejection(0, "exhausted")
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "/status", nil)
 	statusHandler(pool)(rec, req)
@@ -46,7 +46,7 @@ func TestStatus_ShapeAndMasking(t *testing.T) {
 	if snap.Keys[0].Last4 != "1234" {
 		t.Fatalf("Last4 = %q, want 1234", snap.Keys[0].Last4)
 	}
-	if snap.Keys[0].Stats.Pay402 != 1 {
-		t.Fatalf("Pay402 = %d, want 1", snap.Keys[0].Stats.Pay402)
+	if snap.Keys[0].Stats.Exhausted != 1 {
+		t.Fatalf("Pay402 = %d, want 1", snap.Keys[0].Stats.Exhausted)
 	}
 }
