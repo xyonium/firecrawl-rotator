@@ -167,6 +167,70 @@ func TestFetchTavilyUsage(t *testing.T) {
 	}
 }
 
+func TestBuildProfiles_firecrawlOnly(t *testing.T) {
+	cfg := Config{
+		APIKeys:            []string{"fc-a", "fc-b"},
+		Upstream:           "https://api.firecrawl.dev",
+		UpstreamHost:       "api.firecrawl.dev",
+		CreditResetDay:     3,
+		LowCreditThreshold: 10,
+		StopCreditThreshold: 2,
+	}
+	profiles := buildProfiles(cfg)
+	if len(profiles) != 1 {
+		t.Fatalf("len = %d, want 1 (tavily disabled)", len(profiles))
+	}
+	p := profiles[0]
+	if p.Name != "firecrawl" || p.RoutePrefix != "" || !p.RewriteNext {
+		t.Fatalf("firecrawl profile = %+v", p)
+	}
+	if p.CreditResetDay != 3 || p.UpstreamHost != "api.firecrawl.dev" {
+		t.Fatalf("firecrawl profile fields wrong: %+v", p)
+	}
+	snap := p.pool.Snapshot()
+	if snap.PoolSize != 2 {
+		t.Fatalf("pool size = %d, want 2", snap.PoolSize)
+	}
+}
+
+func TestBuildProfiles_withTavily(t *testing.T) {
+	cfg := Config{
+		APIKeys:            []string{"fc-a"},
+		Upstream:           "https://api.firecrawl.dev",
+		UpstreamHost:       "api.firecrawl.dev",
+		LowCreditThreshold: 10,
+		StopCreditThreshold: 2,
+		Tavily: TavilyConfig{
+			APIKeys:     []string{"tvly-a", "tvly-b"},
+			Upstream:    "https://api.tavily.com",
+			RoutePrefix: "/tavily",
+			LowCredit:   5,
+			StopCredit:  1,
+		},
+	}
+	profiles := buildProfiles(cfg)
+	if len(profiles) != 2 {
+		t.Fatalf("len = %d, want 2", len(profiles))
+	}
+	tv := profiles[1]
+	if tv.Name != "tavily" || tv.RoutePrefix != "/tavily" || tv.RewriteNext {
+		t.Fatalf("tavily profile = %+v", tv)
+	}
+	if tv.UpstreamHost != "api.tavily.com" {
+		t.Fatalf("tavily UpstreamHost = %q", tv.UpstreamHost)
+	}
+	// Thresholds are per-profile: tavily pool uses its own 5/1.
+	tv.pool.mu.Lock()
+	low, stop := tv.pool.lowThreshold, tv.pool.stopThreshold
+	tv.pool.mu.Unlock()
+	if low != 5 || stop != 1 {
+		t.Fatalf("tavily pool thresholds = %d/%d, want 5/1", low, stop)
+	}
+	if tv.pool.Snapshot().PoolSize != 2 {
+		t.Fatalf("tavily pool size = %d, want 2", tv.pool.Snapshot().PoolSize)
+	}
+}
+
 func TestFetchTavilyUsage_unauthorized(t *testing.T) {
 	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(401)

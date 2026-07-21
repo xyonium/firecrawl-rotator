@@ -20,7 +20,41 @@ type Profile struct {
 	refresh *Refresher
 }
 
-// shouldRotate is the per-profile reject decision.
+// buildProfiles constructs the runtime profiles from config. The firecrawl
+// (default, unprefixed) profile always comes first. Tavily is appended only
+// when TAVILY_API_KEYS is set. Each profile gets its own KeyPool with its own
+// thresholds.
+func buildProfiles(cfg Config) []*Profile {
+	fcPool := NewKeyPool(cfg.APIKeys)
+	fcPool.SetThresholds(cfg.LowCreditThreshold, cfg.StopCreditThreshold)
+	profiles := []*Profile{{
+		Name:           "firecrawl",
+		Upstream:       cfg.Upstream,
+		UpstreamHost:   cfg.UpstreamHost,
+		CreditResetDay: cfg.CreditResetDay,
+		RewriteNext:    true,
+		pool:           fcPool,
+	}}
+
+	if len(cfg.Tavily.APIKeys) > 0 {
+		tvPool := NewKeyPool(cfg.Tavily.APIKeys)
+		tvPool.SetThresholds(cfg.Tavily.LowCredit, cfg.Tavily.StopCredit)
+		host := cfg.Tavily.Upstream
+		if i := strings.Index(host, "://"); i >= 0 {
+			host = host[i+3:]
+		}
+		profiles = append(profiles, &Profile{
+			Name:           "tavily",
+			RoutePrefix:    cfg.Tavily.RoutePrefix,
+			Upstream:       cfg.Tavily.Upstream,
+			UpstreamHost:   host,
+			CreditResetDay: cfg.CreditResetDay,
+			RewriteNext:    false,
+			pool:           tvPool,
+		})
+	}
+	return profiles
+}
 //
 // firecrawl: 402/429/401 always rotate; otherwise a failure envelope whose
 // error text matches the denylist rotates. A success:true response NEVER
