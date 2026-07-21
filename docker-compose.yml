@@ -1,7 +1,7 @@
 services:
-  firecrawl-rotator:
+  api-key-rotator:
     build: .
-    # or: image: ghcr.io/<you>/firecrawl-rotator:latest
+    # or: image: ghcr.io/<you>/api-key-rotator:latest
     environment:
       FIRECRAWL_API_KEYS: "fc-key1,fc-key2,fc-key3"
       UPSTREAM: "https://api.firecrawl.dev"
@@ -14,10 +14,13 @@ services:
       CREDIT_REFRESH_INTERVAL: "300"
       LOG_LEVEL: "info"
       # UPSTREAM_PROXY: "http://corp-proxy:3128"   # optional egress proxy
+      # TAVILY_API_KEYS: "tvly-key1,tvly-key2"     # optional tavily profile
+      # TAVILY_UPSTREAM: "https://api.tavily.com"
+      # TAVILY_ROUTE_PREFIX: "/tavily"
     ports:
       - "8788:8788"
     healthcheck:
-      test: ["CMD", "/rotator", "-healthcheck"]
+      test: ["CMD", "/api-key-rotator", "-healthcheck"]
       interval: 30s
       timeout: 3s
       retries: 3
@@ -30,10 +33,10 @@ services:
     volumes:
       - ./config:/config:ro
     depends_on:
-      firecrawl-rotator:
+      api-key-rotator:
         condition: service_healthy
     environment:
       # mcpo's config.json sets FIRECRAWL_API_URL per MCP server; shown here
       # for clarity. The key is REMOVED - the rotator injects it.
-      FIRECRAWL_API_URL: "http://firecrawl-rotator:8788"
+      FIRECRAWL_API_URL: "http://api-key-rotator:8788"
     restart: unless-stopped

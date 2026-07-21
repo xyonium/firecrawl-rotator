@@ -44,7 +44,7 @@ jobs:
             ghcr.io/${{ env.IMAGE_REPOSITORY }}:${{ github.sha }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.description=Reverse proxy that rotates Firecrawl API keys on rejection, for use in front of firecrawl-mcp.
+            org.opencontainers.image.description=Multi-provider API key rotation reverse proxy for Firecrawl + Tavily.
             org.opencontainers.image.licenses=MIT
           cache-from: type=gha
           cache-to: type=gha,mode=max

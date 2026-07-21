@@ -1,22 +1,18 @@
-# firecrawl-rotator
+# api-key-rotator
 
-A small reverse proxy that sits between **firecrawl-mcp** and the Firecrawl API
-(`api.firecrawl.dev`). It holds a pool of Firecrawl API keys, injects one per
-request, and **picks the key with the most remaining credits**, rotating to the
-next-richest when one drops to a low threshold. Transient errors (403, 5xx,
-network) are retried with exponential backoff on the same key; genuine key
-rejections (402/429/401) rotate. When every key is below the stop threshold the
-proxy refuses requests (503) so the MCP client sees a clean failure instead of
-burning dead keys.
-
-It also rewrites Firecrawl's `next` pagination URLs so crawl pagination flows
-back through the proxy and stays under rotation.
+A multi-provider API key rotation reverse proxy. Supports **Firecrawl** and
+**Tavily** profiles — each with its own key pool, upstream, route prefix, and
+rotation policy.
 
 ## Why
 
 `firecrawl-mcp` forwards all upstream calls to `FIRECRAWL_API_URL`. Pointing
 that at this proxy adds key rotation with **zero changes** to firecrawl-mcp -
 run the stock `npx -y firecrawl-mcp`.
+
+Tavily integration works by sed-replacing the Tavily API URL inside
+OpenWebUI's source so Tavily requests flow through the proxy, picking keys
+from a separate pool (see "OpenWebUI + Tavily" below).
 
 ## Run
 
@@ -27,7 +23,7 @@ docker compose up -d
 With `docker-compose.yml`:
 
 ```yaml
-firecrawl-rotator:
+api-key-rotator:
   build: .
   environment:
     FIRECRAWL_API_KEYS: "fc-key1,fc-key2,fc-key3"
@@ -37,7 +33,7 @@ firecrawl-rotator:
 
 firecrawl:                     # your existing mcpo + firecrawl-mcp service
   environment:
-    FIRECRAWL_API_URL: "http://firecrawl-rotator:8788"
+    FIRECRAWL_API_URL: "http://api-key-rotator:8788"
     # FIRECRAWL_API_KEY removed - the rotator injects it
 ```
 
@@ -58,6 +54,11 @@ firecrawl:                     # your existing mcpo + firecrawl-mcp service
 | `LOW_CREDIT_THRESHOLD` | `10` | Switch off a key (rotate to the next) when its predicted `remainingCredits` drops to/below this. |
 | `STOP_CREDIT_THRESHOLD` | `2` | Stop accepting requests when every key is below this. Must be <= `LOW_CREDIT_THRESHOLD`. |
 | `CREDIT_REFRESH_INTERVAL` | `300` | Seconds; minimum interval between credit refreshes of a low-balance key. See "Credit-aware selection". |
+| `TAVILY_API_KEYS` | (unset) | Comma-separated Tavily key pool. When set, enables the Tavily profile. |
+| `TAVILY_UPSTREAM` | `https://api.tavily.com` | Upstream Tavily API base for the Tavily profile. |
+| `TAVILY_ROUTE_PREFIX` | `/tavily` | Route prefix that selects the Tavily profile. Stripped before forwarding. |
+| `TAVILY_LOW_CREDIT_THRESHOLD` | `10` | Same as `LOW_CREDIT_THRESHOLD` but for the Tavily key pool. |
+| `TAVILY_STOP_CREDIT_THRESHOLD` | `2` | Same as `STOP_CREDIT_THRESHOLD` but for the Tavily key pool. |
 | `LOG_LEVEL` | `info` | `debug` adds per-request lines. |
 
 ## Endpoints
@@ -135,12 +136,71 @@ and risk account flags).
 - A background loop re-enables each key at its own reset instant; restarting
   the container also clears all disables.
 
+## Tavily profile
+
+When `TAVILY_API_KEYS` is set, the proxy creates a separate key pool for
+Tavily. Requests whose path starts with `TAVILY_ROUTE_PREFIX` (default
+`/tavily`) are routed to the Tavily pool:
+
+- **Prefix stripping**: the leading `/tavily` is removed before forwarding.
+  A request to `/tavily/search` hits `{TAVILY_UPSTREAM}/search`.
+- **Rotation policy**: HTTP **401** and **429** rotate the key (cool down
+  ~30s) but do not disable. HTTP **432** and **433** disable the key until
+  its credit reset (same reset mechanism as Firecrawl - per-key
+  `/api/usage` or fallback `CREDIT_RESET_DAY`).
+- **Body-based rejection detection**: Tavily rejects are detected purely by
+  status code, never by scanning response body text. The Firecrawl denylist
+  never applies to Tavily responses.
+- **Usage tracking**: the proxy calls `GET /usage` on the Tavily upstream
+  (per-key) to read `remaining_credits` (the `remaining` field at the top
+  level) and `max_credits`. Keys whose `remaining` is at or below
+  `TAVILY_STOP_CREDIT_THRESHOLD` are disabled until `next_reset`.
+- **Credit thresholds**: `TAVILY_LOW_CREDIT_THRESHOLD` and
+  `TAVILY_STOP_CREDIT_THRESHOLD` mirror the Firecrawl thresholds but
+  apply to the Tavily pool independently.
+
+## OpenWebUI + Tavily
+
+To route OpenWebUI's Tavily searches through the proxy, override the Tavily
+API URL at container startup with `sed`:
+
+```yaml
+services:
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    # ... your existing config ...
+    command: >
+      bash -c "
+        sed -i \"s|https://api.tavily.com|http://api-key-rotator:8788/tavily|g\"
+          /app/backend/open_webui/retrieval/web/tavily.py
+          /app/backend/open_webui/retrieval/loaders/tavily.py
+        && bash start.sh"
+```
+
+The `/tavily` prefix is stripped by the proxy before forwarding to
+`https://api.tavily.com`, so no other changes are needed.
+
+## Migration note
+
+This project was originally named `firecrawl-rotator`. The rename to
+`api-key-rotator` affects:
+
+| Item | Old | New |
+|------|-----|-----|
+| Docker image | `ghcr.io/<you>/firecrawl-rotator` | `ghcr.io/<you>/api-key-rotator` |
+| Compose service name | `firecrawl-rotator` | `api-key-rotator` |
+| `FIRECRAWL_API_URL` host | `http://firecrawl-rotator:8788` | `http://api-key-rotator:8788` |
+| Binary / healthcheck | `/rotator -healthcheck` | `/api-key-rotator -healthcheck` |
+
+Update your `docker-compose.yml` service name, image tag, healthcheck path,
+and `depends_on` / `FIRECRAWL_API_URL` references accordingly.
+
 ## Develop
 
 ```bash
 go test ./...
-go build -o rotator .
-FIRECRAWL_API_KEYS=fc-x ./rotator
+go build -o api-key-rotator .
+FIRECRAWL_API_KEYS=fc-x ./api-key-rotator
 ```
 
 See `docs/superpowers/specs/2026-07-09-firecrawl-token-rotation-design.md` for
