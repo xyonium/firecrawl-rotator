@@ -188,9 +188,12 @@ to today (single Firecrawl profile, no prefix routing).
 ## Error handling
 
 - All keys of the matched profile exhausted → `503` (unchanged semantics).
-- Profile disabled (`TAVILY_API_KEYS` unset) but request arrives with its
-  prefix → `404` with a clear JSON error (`{"error":"tavily profile not configured"}`),
-  not a silent fallthrough to Firecrawl.
+- Requests with an unconfigured prefix (e.g. `/tavily/...` when
+  `TAVILY_API_KEYS` is unset) fall through to the default profile, per the
+  Architecture section's routing rule — this keeps single-profile deployments
+  byte-identical. (Revised after final review: an explicit 404 was originally
+  specified here, but fallthrough is the consistent behavior; the upstream
+  simply rejects the odd path.)
 - Prefix collision with reserved paths → config validation error at startup.
 - Network/5xx/403/408 → existing per-key backoff (`tryKey`), unchanged.
 
@@ -205,7 +208,6 @@ to today (single Firecrawl profile, no prefix routing).
   - unprefixed request still hits Firecrawl profile
   - `fetchTavilyUsage` min-layer computation (incl. `limit: 0` / missing layer
     skipped; all layers unlimited → unmeasured)
-  - profile-not-configured → 404
   - `/status` shows both profiles
 - Rename: build produces `api-key-rotator` binary; Dockerfile unchanged
   functionally.
